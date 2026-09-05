@@ -1,7 +1,7 @@
 import React from "react";
 import { useApp } from "../store";
 import type { ViewId } from "../types";
-import { CURRENCIES, currentMonthKey, fmtMoney, monthLabel, shiftMonth } from "../utils";
+import { CURRENCIES, currentMonthKey, fmtAgo, fmtMoney, monthLabel, shiftMonth } from "../utils";
 import { Icon, IconName } from "./Icons";
 
 /* ---------------- month navigator ---------------- */
@@ -66,7 +66,50 @@ export function Logo({ compact = false }: { compact?: boolean }) {
 
 /* ---------------- desktop sidebar ---------------- */
 
-export function Sidebar({ view, setView }: { view: ViewId; setView: (v: ViewId) => void }) {
+function CloudWidget({ onOpen }: { onOpen: () => void }) {
+  const { cloud } = useApp();
+  const dot =
+    cloud.status === "synced" ? "bg-mint live-dot"
+    : cloud.status === "syncing" ? "bg-amber animate-pulse"
+    : cloud.status === "error" ? "bg-coral"
+    : "bg-mint/30";
+  const label = !cloud.configured
+    ? "Set up free cloud sync"
+    : !cloud.user
+      ? "Sign in to sync"
+      : cloud.status === "syncing"
+        ? "Syncing…"
+        : cloud.status === "error"
+          ? "Sync error — tap to fix"
+          : cloud.status === "offline"
+            ? "Offline — changes queued"
+            : cloud.lastSync
+              ? `Synced · ${fmtAgo(cloud.lastSync)}`
+              : "Cloud connected";
+  return (
+    <button
+      onClick={onOpen}
+      className="mx-4 mb-4 flex w-[calc(100%-2rem)] items-center gap-3 rounded-xl border border-pine-3 bg-pine-2/50 px-3.5 py-3 text-left transition-colors hover:bg-pine-2 cursor-pointer"
+    >
+      <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+      <span className="min-w-0">
+        <span className="stamp block text-mint/60">Cloud sync</span>
+        <span className="block truncate text-[12.5px] font-semibold text-mint-dim">{label}</span>
+      </span>
+      <Icon name="plane" size={16} className="ml-auto shrink-0 text-mint/50" />
+    </button>
+  );
+}
+
+export function Sidebar({
+  view,
+  setView,
+  onCloudOpen,
+}: {
+  view: ViewId;
+  setView: (v: ViewId) => void;
+  onCloudOpen: () => void;
+}) {
   const { settings, setCurrency, transactions, resetDemo } = useApp();
   const mk = currentMonthKey();
   const monthTx = transactions.filter((t) => t.date.startsWith(mk));
@@ -98,6 +141,8 @@ export function Sidebar({ view, setView }: { view: ViewId; setView: (v: ViewId) 
           );
         })}
       </nav>
+
+      <CloudWidget onOpen={onCloudOpen} />
 
       <div className="mx-4 mb-4 rounded-xl border border-pine-3 bg-pine-2/70 p-4">
         <p className="stamp text-mint/60">This month net</p>
@@ -148,21 +193,39 @@ export function MobileBar({
   view,
   setView,
   onAdd,
+  onCloudOpen,
 }: {
   view: ViewId;
   setView: (v: ViewId) => void;
   onAdd: () => void;
+  onCloudOpen: () => void;
 }) {
+  const { cloud } = useApp();
+  const cloudDot =
+    cloud.status === "synced" ? "bg-mint"
+    : cloud.status === "syncing" ? "bg-amber animate-pulse"
+    : cloud.status === "error" ? "bg-coral"
+    : "bg-mint/30";
   return (
     <>
-      <header className="sticky top-0 z-40 flex items-center justify-between border-b-2 border-pine-3 bg-pine px-4 py-3 lg:hidden">
+      <header className="sticky top-0 z-40 flex items-center justify-between gap-2 border-b-2 border-pine-3 bg-pine px-4 py-3 lg:hidden">
         <Logo />
-        <button
-          onClick={onAdd}
-          className="flex items-center gap-1.5 rounded-lg border-2 border-pine-3 bg-pine-2 px-3 py-1.5 text-[13px] font-bold text-mint transition-transform active:scale-95 cursor-pointer"
-        >
-          <Icon name="plus" size={15} strokeWidth={2.6} /> Add
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onCloudOpen}
+            aria-label="Cloud sync"
+            className="relative grid h-9 w-9 place-items-center rounded-lg border-2 border-pine-3 bg-pine-2 text-mint transition-transform active:scale-95 cursor-pointer"
+          >
+            <Icon name="plane" size={16} />
+            <span className={`absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-pine ${cloudDot}`} />
+          </button>
+          <button
+            onClick={onAdd}
+            className="flex items-center gap-1.5 rounded-lg border-2 border-pine-3 bg-pine-2 px-3 py-1.5 text-[13px] font-bold text-mint transition-transform active:scale-95 cursor-pointer"
+          >
+            <Icon name="plus" size={15} strokeWidth={2.6} /> Add
+          </button>
+        </div>
       </header>
 
       <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t-2 border-pine-3 bg-pine pb-[env(safe-area-inset-bottom)] lg:hidden">

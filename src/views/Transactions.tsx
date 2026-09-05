@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Icon } from "../components/Icons";
+import { ImportModal } from "../components/ImportModal";
 import { ConfirmModal } from "../components/modals";
 import { BTN_GHOST, BTN_PRIMARY, CARD, EmptyState, Reveal, Segmented } from "../components/ui";
 import { useApp } from "../store";
@@ -17,6 +18,7 @@ export function Transactions({
 }) {
   const { transactions, categories, settings, deleteTransaction, pushToast } = useApp();
   const currency = settings.currency;
+  const [importOpen, setImportOpen] = useState(false);
 
   const [q, setQ] = useState("");
   const [typeF, setTypeF] = useState<TypeFilter>("all");
@@ -90,7 +92,13 @@ export function Transactions({
             Showing <b className="num">{filtered.length}</b> of {transactions.length} entries
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className={BTN_GHOST + " border border-line bg-card"}
+            onClick={() => setImportOpen(true)}
+          >
+            <Icon name="download" size={16} className="rotate-180" /> Import
+          </button>
           <button
             className={BTN_GHOST + " border border-line bg-card"}
             onClick={() => {
@@ -99,7 +107,7 @@ export function Transactions({
             }}
             disabled={filtered.length === 0}
           >
-            <Icon name="download" size={16} /> Export CSV
+            <Icon name="download" size={16} /> Export
           </button>
           <button className={BTN_PRIMARY} onClick={onAdd}>
             <Icon name="plus" size={16} strokeWidth={2.4} /> Add entry
@@ -313,6 +321,8 @@ export function Transactions({
           onClose={() => setToDelete(null)}
         />
       )}
+
+      {importOpen && <ImportModal onClose={() => setImportOpen(false)} />}
     </div>
   );
 }

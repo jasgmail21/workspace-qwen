@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { CloudModal } from "./components/CloudModal";
 import { AddFAB, MobileBar, Sidebar, ToastHost } from "./components/layout";
 import { TransactionModal } from "./components/modals";
 import { AppProvider, useApp } from "./store";
@@ -13,6 +14,7 @@ function Shell() {
   const { settings, setCurrency } = useApp();
   const [view, setView] = useState<ViewId>("overview");
   const [monthKey, setMonthKey] = useState(currentMonthKey());
+  const [cloudOpen, setCloudOpen] = useState(false);
   const [txModal, setTxModal] = useState<{ open: boolean; tx: Transaction | null }>({
     open: false,
     tx: null,
@@ -28,8 +30,8 @@ function Shell() {
 
   return (
     <div className="min-h-screen">
-      <Sidebar view={view} setView={setView} />
-      <MobileBar view={view} setView={setView} onAdd={openAdd} />
+      <Sidebar view={view} setView={setView} onCloudOpen={() => setCloudOpen(true)} />
+      <MobileBar view={view} setView={setView} onAdd={openAdd} onCloudOpen={() => setCloudOpen(true)} />
 
       <main className="lg:pl-[248px]">
         <div className="mx-auto w-full max-w-[1180px] px-4 pb-32 pt-6 sm:px-6 lg:px-10 lg:pb-24 lg:pt-10">
@@ -51,7 +53,7 @@ function Shell() {
                   <path d="M12 11c0-3.5 2.7-5.5 6.5-5.5C18.5 9 15.8 11 12 11z" />
                 </svg>
               </span>
-              Sprout — a private ledger that lives in your browser.
+              Sprout — private by default, synced everywhere if you want.
             </span>
             <span className="flex items-center gap-3">
               <label htmlFor="currency-mobile" className="lg:hidden">
@@ -85,6 +87,7 @@ function Shell() {
       <ToastHost />
 
       {txModal.open && <TransactionModal initial={txModal.tx} onClose={closeTx} />}
+      {cloudOpen && <CloudModal onClose={() => setCloudOpen(false)} />}
     </div>
   );
 }

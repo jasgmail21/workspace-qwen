@@ -1,0 +1,425 @@
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { Category, CloudConfig, Transaction } from "./types";
+import { uid } from "./utils";
+
+const CFG_KEY = "sprout.cloud.config";
+const TOMB_KEY = "sprout.cloud.tombstones";
+
+/* ---------------- schema (paste into Supabase SQL editor) ---------------- */
+
+export const SCHEMA_SQL = `-- ============================================
+-- Sprout ledger schema · run in Supabase SQL editor
+-- ============================================
+create table if not exists public.transactions (
+  id text primary key,
+  user_id uuid not null,
+  type text not null check (type in ('income','expense')),
+  amount numeric(12,2) not null check (amount >= 0),
+  category_id text not null,
+  note text not null default '',
+  date date not null,
+  updated_at bigint not null default 0
+);
+
+create table if not exists public.categories (
+  id text primary key,
+  user_id uuid not null,
+  name text not null,
+  color text not null,
+  icon text not null,
+  type text not null check (type in ('income','expense')),
+  budget numeric(12,2),
+  updated_at bigint not null default 0
+);
+
+create table if not exists public.settings (
+  user_id uuid primary key,
+  currency text not null default 'USD',
+  updated_at bigint not null default 0
+);
+
+-- optional: lets a Google Sheet push rows into your ledger
+create table if not exists public.sheet_inbox (
+  id bigint generated always as identity primary key,
+  date date,
+  kind text default 'expense',
+  category text default 'Uncategorized',
+  note text default '',
+  amount numeric(12,2),
+  created_at timestamptz default now()
+);
+
+alter table public.transactions enable row level security;
+alter table public.categories   enable row level security;
+alter table public.settings     enable row level security;
+alter table public.sheet_inbox  enable row level security;
+
+create policy "own transactions" on public.transactions
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own categories" on public.categories
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own settings" on public.settings
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- sheets (anonymous script) may insert; signed-in devices read + clear
+create policy "sheet insert" on public.sheet_inbox
+  for insert to anon with check (true);
+create policy "sheet read" on public.sheet_inbox
+  for select to authenticated using (true);
+create policy "sheet clear" on public.sheet_inbox
+  for delete to authenticated using (true);
+`;
+
+/* ---------------- config ---------------- */
+
+export function loadCloudConfig(): CloudConfig | null {
+  try {
+    const raw = localStorage.getItem(CFG_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw) as CloudConfig;
+    if (c && c.url && c.anonKey) return c;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export function saveCloudConfig(c: CloudConfig | null): void {
+  try {
+    if (c) localStorage.setItem(CFG_KEY, JSON.stringify(c));
+    else localStorage.removeItem(CFG_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function makeClient(cfg: CloudConfig): SupabaseClient {
+  return createClient(cfg.url, cfg.anonKey, {
+    auth: { persistSession: true, autoRefreshToken: true },
+  });
+}
+
+/* ---------------- tombstones (deletes that must reach the cloud) ---------------- */
+
+interface Tombstone {
+  table: "transactions" | "categories";
+  id: string;
+  at: number;
+}
+
+export function addTombstone(t: Tombstone): void {
+  try {
+    const list = loadTombstones();
+    list.push(t);
+    localStorage.setItem(TOMB_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadTombstones(): Tombstone[] {
+  try {
+    return JSON.parse(localStorage.getItem(TOMB_KEY) ?? "[]") as Tombstone[];
+  } catch {
+    return [];
+  }
+}
+
+function takeTombstones(): Tombstone[] {
+  const list = loadTombstones();
+  try {
+    localStorage.removeItem(TOMB_KEY);
+  } catch {
+    /* ignore */
+  }
+  return list;
+}
+
+/* ---------------- row mapping ---------------- */
+
+interface TxRow {
+  id: string;
+  user_id: string;
+  type: string;
+  amount: number;
+  category_id: string;
+  note: string;
+  date: string;
+  updated_at: number;
+}
+
+interface CatRow {
+  id: string;
+  user_id: string;
+  name: string;
+  color: string;
+  icon: string;
+  type: string;
+  budget: number | null;
+  updated_at: number;
+}
+
+const txToRow = (t: Transaction, userId: string): TxRow => ({
+  id: t.id,
+  user_id: userId,
+  type: t.type,
+  amount: t.amount,
+  category_id: t.categoryId,
+  note: t.note,
+  date: t.date,
+  updated_at: t.updatedAt ?? 0,
+});
+
+const rowToTx = (r: TxRow): Transaction => ({
+  id: r.id,
+  type: r.type === "income" ? "income" : "expense",
+  amount: Number(r.amount),
+  categoryId: r.category_id,
+  note: r.note ?? "",
+  date: typeof r.date === "string" ? r.date.slice(0, 10) : String(r.date),
+  updatedAt: Number(r.updated_at ?? 0),
+});
+
+const catToRow = (c: Category, userId: string): CatRow => ({
+  id: c.id,
+  user_id: userId,
+  name: c.name,
+  color: c.color,
+  icon: c.icon,
+  type: c.type,
+  budget: c.budget ?? null,
+  updated_at: c.updatedAt ?? 0,
+});
+
+const rowToCat = (r: CatRow): Category => ({
+  id: r.id,
+  name: r.name,
+  color: r.color,
+  icon: r.icon,
+  type: r.type === "income" ? "income" : "expense",
+  budget: r.budget == null ? undefined : Number(r.budget),
+  updatedAt: Number(r.updated_at ?? 0),
+});
+
+/* ---------------- the sync engine ---------------- */
+
+export interface SyncInput {
+  transactions: Transaction[];
+  categories: Category[];
+  currency: string;
+  settingsUpdatedAt: number;
+}
+
+export interface SyncResult extends SyncInput {
+  ingestedFromSheet: number;
+}
+
+export interface DirtyFlags {
+  tx: Set<string>;
+  cat: Set<string>;
+  settings: boolean;
+}
+
+const FALLBACK_COLORS = [
+  "#2f7e58", "#c2703e", "#4f7ac2", "#b64f6e", "#7a6bc9",
+  "#3d8f8a", "#a3802c", "#8a5a3b", "#5b7f3b", "#c05a4e",
+];
+
+export async function syncAll(
+  client: SupabaseClient,
+  userId: string,
+  local: SyncInput,
+  dirty: DirtyFlags
+): Promise<SyncResult> {
+  /* 1 — pull everything that belongs to this user */
+  const [txRes, catRes, setRes, inboxRes] = await Promise.all([
+    client.from("transactions").select("*").eq("user_id", userId),
+    client.from("categories").select("*").eq("user_id", userId),
+    client.from("settings").select("*").eq("user_id", userId).maybeSingle(),
+    client.from("sheet_inbox").select("*").order("id", { ascending: true }),
+  ]);
+  if (txRes.error) throw new Error(`transactions: ${txRes.error.message}`);
+  if (catRes.error) throw new Error(`categories: ${catRes.error.message}`);
+  if (setRes.error) throw new Error(`settings: ${setRes.error.message}`);
+
+  const cloudTx = new Map<string, Transaction>(
+    ((txRes.data ?? []) as TxRow[]).map((r) => [r.id, rowToTx(r)])
+  );
+  const cloudCat = new Map<string, Category>(
+    ((catRes.data ?? []) as CatRow[]).map((r) => [r.id, rowToCat(r)])
+  );
+  const cloudSet = setRes.data as { currency: string; updated_at: number } | null;
+
+  /* 2 — deletions recorded locally while (maybe) offline */
+  const tombs = takeTombstones();
+  const tombTx = new Map(tombs.filter((t) => t.table === "transactions").map((t) => [t.id, t.at]));
+  const tombCat = new Map(tombs.filter((t) => t.table === "categories").map((t) => [t.id, t.at]));
+  const txToDelete: string[] = [];
+  const catToDelete: string[] = [];
+  tombTx.forEach((at, id) => {
+    const c = cloudTx.get(id);
+    if (c && (c.updatedAt ?? 0) <= at) {
+      cloudTx.delete(id);
+      txToDelete.push(id);
+    }
+  });
+  tombCat.forEach((at, id) => {
+    const c = cloudCat.get(id);
+    if (c && (c.updatedAt ?? 0) <= at) {
+      cloudCat.delete(id);
+      catToDelete.push(id);
+    }
+  });
+
+  /* 3 — last-write-wins merge */
+  const pushTx: Transaction[] = [];
+  const mergedTx = new Map<string, Transaction>(cloudTx);
+  for (const t of local.transactions) {
+    const cloud = cloudTx.get(t.id);
+    if (!cloud || (t.updatedAt ?? 0) >= (cloud.updatedAt ?? 0)) {
+      mergedTx.set(t.id, t);
+      if (dirty.tx.has(t.id) || !cloud) pushTx.push(t);
+    }
+  }
+
+  const pushCat: Category[] = [];
+  const mergedCat = new Map<string, Category>(cloudCat);
+  for (const c of local.categories) {
+    const cloud = cloudCat.get(c.id);
+    if (!cloud || (c.updatedAt ?? 0) >= (cloud.updatedAt ?? 0)) {
+      mergedCat.set(c.id, c);
+      if (dirty.cat.has(c.id) || !cloud) pushCat.push(c);
+    }
+  }
+
+  /* 4 — Google Sheet inbox → turn rows into real transactions */
+  let ingested = 0;
+  const inboxRows = inboxRes.error
+    ? []
+    : ((inboxRes.data ?? []) as {
+        id: number;
+        date: string | null;
+        kind: string | null;
+        category: string | null;
+        note: string | null;
+        amount: number | null;
+      }[]);
+
+  if (inboxRows.length > 0) {
+    const now = Date.now();
+    const inboxIds: number[] = [];
+    for (const r of inboxRows) {
+      const amount = Math.abs(Number(r.amount));
+      if (!r.date || isNaN(amount) || amount <= 0) {
+        inboxIds.push(r.id); // malformed → drop it
+        continue;
+      }
+      const type = /inc|dep|credit/i.test(r.kind ?? "") ? "income" : "expense";
+      const name = (r.category ?? "").trim() || "Uncategorized";
+      let cat = Array.from(mergedCat.values()).find(
+        (c) => c.name.toLowerCase() === name.toLowerCase() && c.type === type
+      );
+      if (!cat) {
+        let hash = 0;
+        for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+        cat = {
+          id: `cat-${uid()}`,
+          name,
+          type,
+          color: FALLBACK_COLORS[hash % FALLBACK_COLORS.length],
+          icon: "coins",
+          updatedAt: now,
+        };
+        mergedCat.set(cat.id, cat);
+        pushCat.push(cat);
+      }
+      const tx: Transaction = {
+        id: uid(),
+        type,
+        amount,
+        categoryId: cat.id,
+        note: (r.note ?? "").trim() || "From Google Sheet",
+        date: String(r.date).slice(0, 10),
+        updatedAt: now + ingested, // keep ordering stable
+      };
+      mergedTx.set(tx.id, tx);
+      pushTx.push(tx);
+      inboxIds.push(r.id);
+      ingested++;
+    }
+    if (inboxIds.length > 0) {
+      await client.from("sheet_inbox").delete().in("id", inboxIds);
+    }
+  }
+
+  /* 5 — settings merge */
+  let currency = local.currency;
+  let settingsUpdatedAt = local.settingsUpdatedAt;
+  const cloudSetAt = Number(cloudSet?.updated_at ?? 0);
+  let pushSettings = dirty.settings || !cloudSet;
+  if (cloudSet && cloudSetAt > settingsUpdatedAt) {
+    currency = cloudSet.currency;
+    settingsUpdatedAt = cloudSetAt;
+    pushSettings = false;
+  }
+
+  /* 6 — push winners back up */
+  const writes: PromiseLike<unknown>[] = [];
+  if (pushTx.length)
+    writes.push(
+      client.from("transactions").upsert(pushTx.map((t) => txToRow(t, userId)))
+    );
+  if (pushCat.length)
+    writes.push(
+      client.from("categories").upsert(pushCat.map((c) => catToRow(c, userId)))
+    );
+  if (pushSettings)
+    writes.push(
+      client.from("settings").upsert({
+        user_id: userId,
+        currency,
+        updated_at: settingsUpdatedAt,
+      })
+    );
+  if (txToDelete.length)
+    writes.push(client.from("transactions").delete().in("id", txToDelete));
+  if (catToDelete.length)
+    writes.push(client.from("categories").delete().in("id", catToDelete));
+
+  const results = await Promise.all(writes);
+  for (const r of results) {
+    const err = (r as { error?: { message: string } | null }).error;
+    if (err) throw new Error(err.message);
+  }
+
+  return {
+    transactions: Array.from(mergedTx.values()),
+    categories: Array.from(mergedCat.values()),
+    currency,
+    settingsUpdatedAt,
+    ingestedFromSheet: ingested,
+  };
+}
+
+/* ---------------- Google Sheet CSV fetch ---------------- */
+
+export async function fetchSheetCSV(url: string): Promise<string> {
+  let u = url.trim();
+  const m = u.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (m && !u.includes("output=csv") && !u.includes("tqx=out:csv")) {
+    u = `https://docs.google.com/spreadsheets/d/${m[1]}/gviz/tq?tqx=out:csv`;
+  }
+  const res = await fetch(u);
+  if (!res.ok) {
+    throw new Error(
+      `Google returned ${res.status}. Make sure the sheet is shared as “Anyone with the link”, or use Share → Publish to web → CSV and paste that link.`
+    );
+  }
+  const text = await res.text();
+  if (text.trim().startsWith("<")) {
+    throw new Error(
+      "Google returned a web page instead of CSV. Open the sheet → File → Share → Publish to web → choose CSV → paste that link here."
+    );
+  }
+  return text;
+}
