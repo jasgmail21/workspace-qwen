@@ -34,7 +34,7 @@ create table if not exists public.categories (
 
 create table if not exists public.settings (
   user_id uuid primary key,
-  currency text not null default 'USD',
+  currency text not null default 'INR',
   updated_at bigint not null default 0
 );
 
@@ -278,24 +278,31 @@ export async function syncAll(
     }
   });
 
-  /* 3 — last-write-wins merge */
+  /* 3 — cloud-first merge:
+        Supabase is the source of truth. The local copy contributes ONLY
+        (a) transactions/categories the user actually changed on this device
+            since the last successful sync (the dirty sets), and
+        (b) default categories when the cloud ledger is brand-new/empty, so a
+            fresh device still has a usable category list.
+        Everything else local (e.g. leftover demo data) is replaced by cloud. */
   const pushTx: Transaction[] = [];
   const mergedTx = new Map<string, Transaction>(cloudTx);
   for (const t of local.transactions) {
-    const cloud = cloudTx.get(t.id);
-    if (!cloud || (t.updatedAt ?? 0) >= (cloud.updatedAt ?? 0)) {
+    if (dirty.tx.has(t.id)) {
       mergedTx.set(t.id, t);
-      if (dirty.tx.has(t.id) || !cloud) pushTx.push(t);
+      pushTx.push(t);
     }
   }
 
+  const cloudHasCategories = cloudCat.size > 0;
   const pushCat: Category[] = [];
   const mergedCat = new Map<string, Category>(cloudCat);
   for (const c of local.categories) {
-    const cloud = cloudCat.get(c.id);
-    if (!cloud || (c.updatedAt ?? 0) >= (cloud.updatedAt ?? 0)) {
+    const isDirty = dirty.cat.has(c.id);
+    const isNewDefault = !cloudHasCategories && !cloudCat.has(c.id);
+    if (isDirty || isNewDefault) {
       mergedCat.set(c.id, c);
-      if (dirty.cat.has(c.id) || !cloud) pushCat.push(c);
+      pushCat.push(c);
     }
   }
 

@@ -1,10 +1,10 @@
 import type { Category, Transaction } from "./types";
 
 export const CURRENCIES = [
+  { code: "INR", label: "Indian Rupee (₹)" },
   { code: "USD", label: "US Dollar ($)" },
   { code: "EUR", label: "Euro (€)" },
   { code: "GBP", label: "British Pound (£)" },
-  { code: "INR", label: "Indian Rupee (₹)" },
   { code: "JPY", label: "Japanese Yen (¥)" },
   { code: "AUD", label: "Australian Dollar (A$)" },
   { code: "CAD", label: "Canadian Dollar (C$)" },

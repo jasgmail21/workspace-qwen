@@ -110,7 +110,7 @@ export function Sidebar({
   setView: (v: ViewId) => void;
   onCloudOpen: () => void;
 }) {
-  const { settings, setCurrency, transactions, resetDemo } = useApp();
+  const { settings, setCurrency, transactions, resetDemo, cloud } = useApp();
   const mk = currentMonthKey();
   const monthTx = transactions.filter((t) => t.date.startsWith(mk));
   const net = monthTx.reduce((s, t) => s + (t.type === "income" ? t.amount : -t.amount), 0);
@@ -173,15 +173,24 @@ export function Sidebar({
             ))}
           </select>
         </div>
-        <button
-          onClick={resetDemo}
-          className="text-[12px] font-medium text-mint/50 underline decoration-mint/30 underline-offset-4 transition-colors hover:text-mint cursor-pointer"
-        >
-          Restore demo data
-        </button>
-        <p className="text-[11px] leading-4 text-mint/40">
-          Private by design — everything is stored in this browser only.
-        </p>
+        {cloud.user ? (
+          <p className="text-[11px] leading-4 text-mint/40">
+            Cloud account active — Supabase is your source of truth; this browser keeps an
+            offline cache only.
+          </p>
+        ) : (
+          <>
+            <button
+              onClick={resetDemo}
+              className="text-[12px] font-medium text-mint/50 underline decoration-mint/30 underline-offset-4 transition-colors hover:text-mint cursor-pointer"
+            >
+              Restore demo data
+            </button>
+            <p className="text-[11px] leading-4 text-mint/40">
+              Local mode — data lives in this browser. Connect Cloud sync to use any device.
+            </p>
+          </>
+        )}
       </div>
     </aside>
   );

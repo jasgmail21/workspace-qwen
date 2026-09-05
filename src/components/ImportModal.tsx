@@ -33,31 +33,65 @@ function parseCSV(text: string): string[][] {
   return rows;
 }
 
+const MONTHS: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+  may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9,
+  september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+};
+
+function ymd(y: number, m: number, d: number): string | null {
+  if (y < 100) y += y < 70 ? 2000 : 1900;
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1980 || y > 2100) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/** Accepts: 2021-03-05 · 05/03/2021 · 3/5/21 · 05-Mar-2021 · Mar 5, 2021 ·
+ *  5 March 2021 · 2021/03/05 · 05.03.2021 · epoch ms/s · and anything Date.parse knows. */
 function parseDate(s: string): string | null {
-  s = s.trim();
+  s = s.trim().replace(/[\u200e\u200f\u00a0]/g, ""); // strip LRM/RLM marks Sheets exports
   if (!s) return null;
-  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-  m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+
+  let m = s.match(/^(\d{10})(\d{3})?$/); // epoch
   if (m) {
-    let a = Number(m[1]); let b = Number(m[2]); let y = Number(m[3]);
-    if (y < 100) y += 2000;
-    if (a > 12 && b <= 12) { const t = a; a = b; b = t; } // dd/mm → mm/dd
-    if (a >= 1 && a <= 12 && b >= 1 && b <= 31)
-      return `${y}-${String(a).padStart(2, "0")}-${String(b).padStart(2, "0")}`;
-    return null;
+    const d = new Date(m[2] ? Number(s) : Number(s) * 1000);
+    return isNaN(d.getTime()) ? null : toISO(d);
   }
+
+  m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/); // ISO / yyyy/mm/dd
+  if (m) return ymd(Number(m[1]), Number(m[2]), Number(m[3]));
+
+  m = s.match(/^(\d{1,2})[ \-/.]([A-Za-z]{3,9})[ \-/.]*(\d{2,4})$/); // 5 Mar 2021 / 05-Mar-21
+  if (m && MONTHS[m[2].slice(0, 3).toLowerCase()])
+    return ymd(Number(m[3]), MONTHS[m[2].slice(0, 3).toLowerCase()], Number(m[1]));
+
+  m = s.match(/^([A-Za-z]{3,9})[ \-/.](\d{1,2}),?\s*(\d{2,4})$/); // Mar 5, 2021
+  if (m && MONTHS[m[1].slice(0, 3).toLowerCase()])
+    return ymd(Number(m[3]), MONTHS[m[1].slice(0, 3).toLowerCase()], Number(m[2]));
+
+  m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/); // d/m/y — assume day-first (India), auto-swap if impossible
+  if (m) {
+    const a = Number(m[1]); const b = Number(m[2]); const y = Number(m[3]);
+    if (a > 12 && b <= 12) return ymd(y, b, a); // clearly day-first (25/03/2021)
+    if (b > 12 && a <= 12) return ymd(y, a, b); // clearly month-first (03/25/2021)
+    return ymd(y, b, a) ?? ymd(y, a, b); // ambiguous → day-first, then month-first
+  }
+
   const d = new Date(s);
   if (!isNaN(d.getTime()) && d.getFullYear() > 1980 && d.getFullYear() < 2100) return toISO(d);
   return null;
 }
 
+/** Handles $1,234.56 · ₹12,34,567.89 · 1.234,56 · 45,00 · (45.00) · -45 · plain numbers. */
 function parseAmount(s: string): number | null {
   let t = s.trim().replace(/[^\d.,\-+()]/g, "");
   if (!t) return null;
   const negParen = /^\(.*\)$/.test(t);
-  if (t.includes(",") && t.includes(".")) t = t.replace(/\./g, "").replace(",", "."); // 1.234,56 → 1234.56
-  else t = t.replace(/,/g, "");
+  if (t.includes(",") && t.includes(".")) {
+    if (t.lastIndexOf(",") > t.lastIndexOf(".")) t = t.replace(/\./g, "").replace(/,/g, "."); // EU 1.234,56
+    else t = t.replace(/,/g, ""); // US / Indian 1,234.56 / 12,34,567.89
+  } else if (t.includes(",")) {
+    t = /,\d{1,2}$/.test(t) ? t.replace(",", ".") : t.replace(/,/g, ""); // 45,00 → decimal · 1,234 → thousands
+  }
   const v = parseFloat(t);
   if (isNaN(v)) return null;
   return negParen ? -Math.abs(v) : v;
@@ -90,24 +124,30 @@ function guessMapping(headers: string[]): Mapping {
 interface Parsed {
   headers: string[];
   mapping: Mapping;
+  sample: string[] | null;
   transactions: { date: string; amount: number; type: TxType; categoryName: string; note: string }[];
   skipped: number;
+  totalRows: number;
 }
 
-function buildParsed(text: string, allExpense: boolean): Parsed | null {
+function buildParsed(text: string, allExpense: boolean, noHeader: boolean): Parsed | null {
   const firstNl = text.indexOf("\n");
   const firstLine = firstNl === -1 ? text : text.slice(0, firstNl);
   if (firstLine.includes("\t")) text = text.replace(/\t/g, ","); // pasted straight from a sheet
   const rows = parseCSV(text);
-  if (rows.length < 2) return null;
-  const headers = rows[0];
-  const mapping = guessMapping(headers);
+  if (rows.length === 0) return null;
+  if (!noHeader && rows.length < 2) return null;
+  const headers = noHeader
+    ? rows[0].map((_, i) => `Column ${i + 1}`)
+    : rows[0].map((h, i) => h.trim() || `Column ${i + 1}`);
+  const dataRows = noHeader ? rows : rows.slice(1);
+  const mapping = noHeader ? { date: 0, amount: Math.min(1, headers.length - 1), type: -1, category: -1, note: -1 } : guessMapping(headers);
   if (mapping.amount < 0) mapping.amount = headers.length > 1 ? 1 : 0;
   if (mapping.date < 0) mapping.date = 0;
 
   const out: Parsed["transactions"] = [];
   let skipped = 0;
-  for (const r of rows.slice(1)) {
+  for (const r of dataRows) {
     const rawDate = r[mapping.date] ?? "";
     const rawAmount = r[mapping.amount] ?? "";
     const date = parseDate(rawDate);
@@ -122,7 +162,14 @@ function buildParsed(text: string, allExpense: boolean): Parsed | null {
       note: (mapping.note >= 0 ? r[mapping.note] : "").trim(),
     });
   }
-  return { headers, mapping, transactions: out, skipped };
+  return {
+    headers,
+    mapping,
+    sample: dataRows[0] ?? null,
+    transactions: out,
+    skipped,
+    totalRows: dataRows.length,
+  };
 }
 
 /* ---------------- component ---------------- */
@@ -139,6 +186,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [allExpense, setAllExpense] = useState(true);
+  const [noHeader, setNoHeader] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -147,13 +195,21 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const parsed = useMemo(() => (raw ? buildParsed(raw, allExpense) : null), [raw, allExpense]);
+  const parsed = useMemo(
+    () => (raw ? buildParsed(raw, allExpense, noHeader) : null),
+    [raw, allExpense, noHeader]
+  );
+
+  const loadData = (name: string, text: string) => {
+    setErr(null);
+    setFileName(name);
+    setMappingOverride(null);
+    setRaw(text);
+  };
 
   const onFile = async (f: File | undefined | null) => {
     if (!f) return;
-    setErr(null);
-    setFileName(f.name);
-    setRaw(await f.text());
+    loadData(f.name, await f.text());
   };
 
   const onFetchSheet = async () => {
@@ -161,8 +217,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
     setLoading(true);
     try {
       const text = await fetchSheetCSV(sheetUrl);
-      setFileName("Google Sheet");
-      setRaw(text);
+      loadData("Google Sheet", text);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not fetch the sheet.");
     } finally {
@@ -245,15 +300,26 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                 { value: "paste", label: "Paste text", icon: "pencil" },
               ]}
             />
-            <label className="flex items-center gap-2 text-[13px] font-medium text-ink-soft cursor-pointer">
-              <input
-                type="checkbox"
-                checked={allExpense}
-                onChange={(e) => setAllExpense(e.target.checked)}
-                className="h-4 w-4 accent-[#2f7e58]"
-              />
-              No type column → treat positive rows as expenses
-            </label>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+              <label className="flex items-center gap-2 text-[13px] font-medium text-ink-soft cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={allExpense}
+                  onChange={(e) => setAllExpense(e.target.checked)}
+                  className="h-4 w-4 accent-[#2f7e58]"
+                />
+                No type column → treat positive rows as expenses
+              </label>
+              <label className="flex items-center gap-2 text-[13px] font-medium text-ink-soft cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={noHeader}
+                  onChange={(e) => { setNoHeader(e.target.checked); setMappingOverride(null); }}
+                  className="h-4 w-4 accent-[#2f7e58]"
+                />
+                First row is data (no header row)
+              </label>
+            </div>
           </div>
 
           {!raw && source === "file" && (
@@ -315,11 +381,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
               <button
                 className={BTN_PRIMARY + " w-full"}
                 disabled={!pasteText.trim()}
-                onClick={() => {
-                  setErr(null);
-                  setFileName("Pasted data");
-                  setRaw(pasteText);
-                }}
+                onClick={() => loadData("Pasted data", pasteText)}
               >
                 <Icon name="check" size={15} strokeWidth={2.4} /> Parse pasted rows
               </button>
@@ -353,24 +415,58 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-                {(["date", "amount", "type", "category", "note"] as const).map((k) => (
-                  <div key={k}>
-                    <label className="stamp mb-1 block text-ink-soft">{k === "type" ? "type (in/out)" : k}</label>
-                    <select
-                      className="field px-2 py-2 text-[13px]"
-                      value={effParsed.mapping[k]}
-                      onChange={(e) => setMap(k, e.target.value)}
-                    >
-                      <option value={-1}>— none —</option>
+              {/* -------- column mapping -------- */}
+              <div className="rounded-xl border-2 border-pine bg-paper/60 p-4">
+                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                  <h3 className="font-display text-[15px] font-bold text-ink">Column mapping</h3>
+                  <span className="num text-[12px] font-semibold text-moss-deep">
+                    {effParsed.transactions.length}/{effParsed.totalRows} rows parse cleanly — changes apply instantly
+                  </span>
+                </div>
+
+                {effParsed.sample && (
+                  <div className="mb-4 overflow-x-auto rounded-lg border border-dashed border-line bg-card px-3 py-2">
+                    <p className="stamp mb-1.5 text-ink-faint">First raw row — match the dropdowns to these values</p>
+                    <div className="flex gap-2">
                       {effParsed.headers.map((h, i) => (
-                        <option key={i} value={i}>
-                          {h || `Column ${i + 1}`}
-                        </option>
+                        <span key={i} className="shrink-0 rounded-md bg-line-soft px-2 py-1 text-[11.5px]">
+                          <b className="text-ink">{h}:</b>{" "}
+                          <span className="num text-ink-soft">{(effParsed.sample?.[i] ?? "").trim() || "·empty·"}</span>
+                        </span>
                       ))}
-                    </select>
+                    </div>
                   </div>
-                ))}
+                )}
+
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                  {(["date", "amount", "type", "category", "note"] as const).map((k) => (
+                    <div key={k}>
+                      <label className="stamp mb-1 block text-ink-soft">
+                        {k === "type" ? "type (in/out)" : k}
+                        {k === "date" || k === "amount" ? " *" : ""}
+                      </label>
+                      <select
+                        className="field px-2 py-2 text-[13px]"
+                        value={effParsed.mapping[k]}
+                        onChange={(e) => setMap(k, e.target.value)}
+                      >
+                        <option value={-1}>— none —</option>
+                        {effParsed.headers.map((h, i) => (
+                          <option key={i} value={i}>
+                            {h || `Column ${i + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+
+                <p className="mt-3 text-[12px] leading-5 text-ink-faint">
+                  <b className="text-ink-soft">date</b> and <b className="text-ink-soft">amount</b> are required —
+                  every format is auto-converted (05/03/2021, 5 Mar 2021, March 5 2021, ₹1,234.56, 1.234,56 …).
+                  Rows without a category land in <b className="text-ink-soft">Uncategorized</b>; rows with
+                  unparseable dates/amounts are skipped and counted above.
+                </p>
               </div>
 
               <div className="overflow-hidden rounded-xl border border-line">

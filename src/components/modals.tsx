@@ -79,6 +79,7 @@ export function TransactionModal({
   const [date, setDate] = useState(initial?.date ?? todayISO());
   const [note, setNote] = useState(initial?.note ?? "");
   const [error, setError] = useState("");
+  const [catModal, setCatModal] = useState(false);
 
   const typeCats = categories.filter((c) => c.type === type);
 
@@ -178,11 +179,24 @@ export function TransactionModal({
 
         {/* category */}
         <div>
-          <label className="stamp mb-2 block text-ink-soft">Category</label>
+          <div className="mb-2 flex items-center justify-between">
+            <label className="stamp text-ink-soft">Category</label>
+            <button
+              type="button"
+              onClick={() => setCatModal(true)}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-bold text-moss-deep transition-colors hover:bg-mint-dim cursor-pointer"
+            >
+              <Icon name="plus" size={13} strokeWidth={2.6} /> New category
+            </button>
+          </div>
           {typeCats.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-line px-3 py-3 text-sm text-ink-soft">
-              No {type} categories yet — create one from the Budgets tab.
-            </p>
+            <button
+              type="button"
+              onClick={() => setCatModal(true)}
+              className="w-full rounded-lg border-2 border-dashed border-line px-3 py-4 text-sm font-semibold text-ink-soft transition-colors hover:border-moss hover:text-moss-deep cursor-pointer"
+            >
+              No {type} categories yet — click to create one
+            </button>
           ) : (
             <div className="grid grid-cols-3 gap-2">
               {typeCats.map((c) => {
@@ -240,36 +254,66 @@ export function TransactionModal({
           </button>
         </div>
       </form>
+
+      {catModal && (
+        <CategoryModal
+          defaultType={type}
+          onCreated={(c) => setCategoryId(c.id)}
+          onClose={() => setCatModal(false)}
+        />
+      )}
     </ModalShell>
   );
 }
 
 /* ---------------- category create ---------------- */
 
-export function CategoryModal({ onClose }: { onClose: () => void }) {
-  const { addCategory } = useApp();
-  const [name, setName] = useState("");
-  const [type, setType] = useState<TxType>("expense");
-  const [color, setColor] = useState(SWATCHES[0]);
-  const [icon, setIcon] = useState<IconName>("cart");
-  const [budget, setBudget] = useState("");
+export function CategoryModal({
+  onClose,
+  initial,
+  defaultType = "expense",
+  onCreated,
+}: {
+  onClose: () => void;
+  /** when provided, the modal edits this category instead of creating one */
+  initial?: Category;
+  defaultType?: TxType;
+  onCreated?: (c: Category) => void;
+}) {
+  const { addCategory, updateCategory } = useApp();
+  const editing = !!initial;
+  const [name, setName] = useState(initial?.name ?? "");
+  const [type, setType] = useState<TxType>(initial?.type ?? defaultType);
+  const [color, setColor] = useState(initial?.color ?? SWATCHES[0]);
+  const swatches =
+    editing && initial && !SWATCHES.includes(initial.color)
+      ? [initial.color, ...SWATCHES]
+      : SWATCHES;
+  const [icon, setIcon] = useState<IconName>((initial?.icon as IconName) ?? "cart");
+  const [budget, setBudget] = useState(
+    initial?.budget != null && initial.budget > 0 ? String(initial.budget) : ""
+  );
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const b = parseFloat(budget);
-    const ok = addCategory({
-      name,
-      type,
-      color,
-      icon,
-      budget: type === "expense" && !isNaN(b) && b > 0 ? Math.round(b * 100) / 100 : undefined,
-    });
-    if (ok) onClose();
+    const budgetVal =
+      type === "expense" && !isNaN(b) && b > 0 ? Math.round(b * 100) / 100 : undefined;
+    if (editing && initial) {
+      updateCategory({ ...initial, name, color, icon, budget: budgetVal });
+      onClose();
+      return;
+    }
+    const cat = addCategory({ name, type, color, icon, budget: budgetVal });
+    if (cat) {
+      onCreated?.(cat);
+      onClose();
+    }
   };
 
   return (
     <ModalShell onClose={onClose} width="sm:max-w-md">
-      <ModalHeader title="New category" onClose={onClose} />
+      <ModalHeader title={editing ? "Edit category" : "New category"} onClose={onClose} />
       <form onSubmit={submit} className="space-y-5 px-5 py-5 sm:px-6">
         <div>
           <label className="stamp mb-2 block text-ink-soft">Name</label>
@@ -291,8 +335,11 @@ export function CategoryModal({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 key={t}
+                disabled={editing}
                 onClick={() => setType(t)}
-                className={`rounded-lg py-2 text-sm font-bold transition-colors cursor-pointer ${
+                className={`rounded-lg py-2 text-sm font-bold transition-colors ${
+                  editing ? "cursor-not-allowed opacity-45" : "cursor-pointer"
+                } ${
                   type === t
                     ? t === "expense"
                       ? "bg-coral text-paper"
@@ -303,13 +350,18 @@ export function CategoryModal({ onClose }: { onClose: () => void }) {
                 {t === "expense" ? "Expense" : "Income"}
               </button>
             ))}
+            {editing && (
+              <p className="col-span-2 text-[11px] text-ink-faint">
+                Type is fixed so existing entries stay consistent.
+              </p>
+            )}
           </div>
         </div>
 
         <div>
           <label className="stamp mb-2 block text-ink-soft">Color</label>
           <div className="flex flex-wrap gap-2">
-            {SWATCHES.map((s) => (
+            {swatches.map((s) => (
               <button
                 type="button"
                 key={s}
@@ -364,7 +416,8 @@ export function CategoryModal({ onClose }: { onClose: () => void }) {
             Cancel
           </button>
           <button type="submit" className={BTN_PRIMARY}>
-            <Icon name="plus" size={16} strokeWidth={2.4} /> Create category
+            <Icon name={editing ? "check" : "plus"} size={16} strokeWidth={2.4} />
+            {editing ? "Save changes" : "Create category"}
           </button>
         </div>
       </form>

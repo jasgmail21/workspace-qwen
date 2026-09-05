@@ -30,6 +30,7 @@ function BudgetCard({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [editOpen, setEditOpen] = useState(false);
   const budget = cat.budget ?? 0;
   const r = budget > 0 ? spent / budget : 0;
   const barColor =
@@ -59,14 +60,26 @@ function BudgetCard({
               <p className="text-[12px] text-ink-faint">Monthly envelope</p>
             </div>
           </div>
-          <button
-            onClick={() => onDelete(cat)}
-            aria-label={`Delete ${cat.name}`}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-ink-faint opacity-100 transition-all hover:bg-coral-soft hover:text-coral-deep lg:opacity-0 lg:group-hover:opacity-100 cursor-pointer"
-          >
-            <Icon name="trash" size={15} />
-          </button>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <button
+              onClick={() => setEditOpen(true)}
+              aria-label={`Edit ${cat.name}`}
+              title="Edit category (name, color, icon, budget)"
+              className="grid h-8 w-8 place-items-center rounded-md text-ink-faint opacity-100 transition-all hover:bg-mint-dim hover:text-moss-deep lg:opacity-0 lg:group-hover:opacity-100 cursor-pointer"
+            >
+              <Icon name="pencil" size={15} />
+            </button>
+            <button
+              onClick={() => onDelete(cat)}
+              aria-label={`Delete ${cat.name}`}
+              className="grid h-8 w-8 place-items-center rounded-md text-ink-faint opacity-100 transition-all hover:bg-coral-soft hover:text-coral-deep lg:opacity-0 lg:group-hover:opacity-100 cursor-pointer"
+            >
+              <Icon name="trash" size={15} />
+            </button>
+          </div>
         </div>
+
+        {editOpen && <CategoryModal initial={cat} onClose={() => setEditOpen(false)} />}
 
         <div className="mt-4 flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
           <span className="num text-[26px] font-bold leading-none text-ink">
@@ -171,13 +184,22 @@ export function Budgets({
         <div>
           <p className="stamp text-moss">Budgets</p>
           <h1 className="mt-1.5 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-            Give every dollar a job
+            Give every rupee a job
           </h1>
           <p className="mt-1.5 text-sm text-ink-soft">
-            Monthly envelopes for {monthLabel(monthKey)} — click any budget to adjust it.
+            Monthly envelopes for {monthLabel(monthKey)} — click any budget to adjust it, or use the
+            pencil to rename and restyle a category.
           </p>
         </div>
-        <MonthNav monthKey={monthKey} onChange={onMonth} />
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setShowNew(true)}
+            className="inline-flex items-center gap-2 rounded-lg border-2 border-pine bg-mint-dim px-4 py-2.5 text-sm font-bold text-moss-deep shadow-[3px_3px_0_0_var(--color-line)] transition-all duration-150 hover:-translate-y-0.5 hover:shadow-[5px_5px_0_0_var(--color-line)] active:translate-y-0 cursor-pointer"
+          >
+            <Icon name="plus" size={16} strokeWidth={2.4} /> New category
+          </button>
+          <MonthNav monthKey={monthKey} onChange={onMonth} />
+        </div>
       </div>
 
       {/* summary strip */}

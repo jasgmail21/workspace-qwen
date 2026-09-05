@@ -27,12 +27,31 @@ import type {
 } from "./types";
 import { fmtMoney, round2, uid } from "./utils";
 
-const STORAGE_KEY = "sprout.ledger.v1";
+const STORAGE_KEY = "sprout.ledger.v2";
+const DIRTY_KEY = "sprout.cloud.dirty.v1";
 
 interface PersistedState {
   transactions: Transaction[];
   categories: Category[];
   settings: Settings;
+}
+
+function seedState(): PersistedState {
+  const now = Date.now();
+  return {
+    transactions: buildSeedTransactions().map((t) => ({ ...t, updatedAt: now })),
+    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c, updatedAt: now })),
+    settings: { currency: "INR", updatedAt: now },
+  };
+}
+
+function emptyState(currency = "INR"): PersistedState {
+  const now = Date.now();
+  return {
+    transactions: [],
+    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c, updatedAt: now })),
+    settings: { currency, updatedAt: now },
+  };
 }
 
 function loadInitial(): PersistedState {
@@ -45,21 +64,50 @@ function loadInitial(): PersistedState {
           transactions: parsed.transactions,
           categories: parsed.categories,
           settings: {
-            currency: parsed.settings?.currency ?? "USD",
+            currency: parsed.settings?.currency ?? "INR",
             updatedAt: parsed.settings?.updatedAt ?? 0,
           },
         };
       }
     }
   } catch {
-    /* fall through to seed */
+    /* fall through */
   }
-  const now = Date.now();
-  return {
-    transactions: buildSeedTransactions().map((t) => ({ ...t, updatedAt: now })),
-    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c, updatedAt: now })),
-    settings: { currency: "USD", updatedAt: now },
-  };
+  /* Fresh browser:
+     - cloud already configured → start EMPTY; Supabase is the source of truth
+       and the first sync will fill the ledger (or leave it empty).
+     - pure local mode → seed demo data so the app opens alive. */
+  return loadCloudConfig() ? emptyState() : seedState();
+}
+
+/* ---------- dirty tracking (persists across restarts) ---------- */
+
+function loadDirty(): { tx: Set<string>; cat: Set<string>; settings: boolean } {
+  try {
+    const raw = localStorage.getItem(DIRTY_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as { tx?: string[]; cat?: string[]; settings?: boolean };
+      return {
+        tx: new Set(p.tx ?? []),
+        cat: new Set(p.cat ?? []),
+        settings: !!p.settings,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { tx: new Set(), cat: new Set(), settings: false };
+}
+
+function saveDirty(tx: Set<string>, cat: Set<string>, settings: boolean): void {
+  try {
+    localStorage.setItem(
+      DIRTY_KEY,
+      JSON.stringify({ tx: Array.from(tx), cat: Array.from(cat), settings })
+    );
+  } catch {
+    /* ignore */
+  }
 }
 
 interface ImportBatchInput {
@@ -79,7 +127,8 @@ interface AppApi {
   updateTransaction: (t: Transaction) => void;
   deleteTransaction: (id: string) => void;
   setBudget: (categoryId: string, budget: number) => void;
-  addCategory: (c: Omit<Category, "id" | "updatedAt">) => boolean;
+  addCategory: (c: Omit<Category, "id" | "updatedAt">) => Category | null;
+  updateCategory: (c: Category) => void;
   deleteCategory: (id: string) => void;
   setCurrency: (code: string) => void;
   resetDemo: () => void;
@@ -119,9 +168,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   stateRef.current = state;
 
   const clientRef = useRef<SupabaseClient | null>(null);
-  const dirtyTx = useRef(new Set<string>());
-  const dirtyCat = useRef(new Set<string>());
-  const dirtySettings = useRef(false);
+  const initialDirty = useRef(loadDirty());
+  const dirtyTx = useRef(initialDirty.current.tx);
+  const dirtyCat = useRef(initialDirty.current.cat);
+  const dirtySettings = useRef(initialDirty.current.settings);
   const syncTimer = useRef<number | null>(null);
   const syncingRef = useRef(false);
   const lastErrToast = useRef(0);
@@ -181,6 +231,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dirtyTx.current.clear();
         dirtyCat.current.clear();
         dirtySettings.current = false;
+        saveDirty(dirtyTx.current, dirtyCat.current, false);
         setState({
           transactions: result.transactions,
           categories: result.categories,
@@ -222,6 +273,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dirtyTx.current = new Set(s.transactions.map((t) => t.id));
     dirtyCat.current = new Set(s.categories.map((c) => c.id));
     dirtySettings.current = true;
+    saveDirty(dirtyTx.current, dirtyCat.current, true);
   }, []);
 
   const markDirtyAndSync = useCallback(
@@ -229,6 +281,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (kind === "tx" && id) dirtyTx.current.add(id);
       if (kind === "cat" && id) dirtyCat.current.add(id);
       if (kind === "settings") dirtySettings.current = true;
+      saveDirty(dirtyTx.current, dirtyCat.current, dirtySettings.current);
       scheduleSync();
     },
     [scheduleSync]
@@ -273,11 +326,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* sync once a session appears */
+  /* sync once a session appears — Supabase is the source of truth:
+     cloud data replaces the local copy; only genuine local edits (the
+     persisted dirty set) are pushed up. An empty cloud → an empty app. */
   useEffect(() => {
     if (cloud.user && clientRef.current) {
-      markAllDirty(); // first sync uploads this device's full ledger; LWW keeps it safe
-      const t = window.setTimeout(() => void doSync(false), 500);
+      const t = window.setTimeout(() => void doSync(false), 400);
       return () => window.clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -330,11 +384,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             message: `Deleted “${tx.note || categoryOf(tx.categoryId)?.name || "transaction"}”`,
             action: {
               label: "Undo",
-              fn: () =>
+              fn: () => {
+                const revived = { ...tx, updatedAt: Date.now() };
                 setState((s) => ({
                   ...s,
-                  transactions: [...s.transactions, { ...tx, updatedAt: Date.now() }],
-                })),
+                  transactions: [...s.transactions, revived],
+                }));
+                dirtyTx.current.add(revived.id);
+                saveDirty(dirtyTx.current, dirtyCat.current, dirtySettings.current);
+                scheduleSync();
+              },
             },
           });
         }
@@ -358,16 +417,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       addCategory(c) {
         const name = c.name.trim();
-        if (!name) return false;
-        if (state.categories.some((x) => x.name.toLowerCase() === name.toLowerCase())) {
-          pushToast({ kind: "error", message: `A category named “${name}” already exists` });
-          return false;
+        if (!name) return null;
+        const dupe = state.categories.find(
+          (x) => x.name.toLowerCase() === name.toLowerCase() && x.type === c.type
+        );
+        if (dupe) {
+          pushToast({ kind: "error", message: `A ${c.type} category named “${name}” already exists` });
+          return null;
         }
         const cat: Category = { ...c, name, id: `cat-${uid()}`, updatedAt: now() };
         setState((s) => ({ ...s, categories: [...s.categories, cat] }));
         markDirtyAndSync("cat", cat.id);
         pushToast({ kind: "success", message: `Category “${name}” created` });
-        return true;
+        return cat;
+      },
+
+      updateCategory(c) {
+        const name = c.name.trim();
+        if (!name) return;
+        const dupe = state.categories.find(
+          (x) => x.id !== c.id && x.name.toLowerCase() === name.toLowerCase() && x.type === c.type
+        );
+        if (dupe) {
+          pushToast({ kind: "error", message: `A ${c.type} category named “${name}” already exists` });
+          return;
+        }
+        const next: Category = { ...c, name, updatedAt: now() };
+        setState((s) => ({
+          ...s,
+          categories: s.categories.map((x) => (x.id === c.id ? next : x)),
+        }));
+        markDirtyAndSync("cat", c.id);
+        pushToast({ kind: "success", message: `Category “${name}” updated` });
       },
 
       deleteCategory(id) {
