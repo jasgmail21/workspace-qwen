@@ -78,6 +78,7 @@ export function TransactionModal({
   const [categoryId, setCategoryId] = useState(initial?.categoryId ?? "");
   const [date, setDate] = useState(initial?.date ?? todayISO());
   const [note, setNote] = useState(initial?.note ?? "");
+  const [payment, setPayment] = useState<Transaction["payment"]>(initial?.payment);
   const [error, setError] = useState("");
   const [catModal, setCatModal] = useState(false);
 
@@ -109,6 +110,7 @@ export function TransactionModal({
       categoryId,
       date: date || todayISO(),
       note: note.trim(),
+      payment,
     };
     if (initial) updateTransaction({ ...payload, id: initial.id });
     else addTransaction(payload);
@@ -241,6 +243,31 @@ export function TransactionModal({
               maxLength={80}
               onChange={(e) => setNote(e.target.value)}
             />
+          </div>
+        </div>
+
+        {/* paid via */}
+        <div>
+          <label className="stamp mb-2 block text-ink-soft">Paid via</label>
+          <div className="inline-flex items-center gap-1 rounded-[10px] border border-line bg-paper p-1">
+            {(
+              [
+                { v: undefined, label: "—" },
+                { v: "cash", label: "Cash / UPI" },
+                { v: "card", label: "Card" },
+              ] as { v: Transaction["payment"]; label: string }[]
+            ).map((o) => (
+              <button
+                type="button"
+                key={o.label}
+                onClick={() => setPayment(o.v)}
+                className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors cursor-pointer ${
+                  payment === o.v ? "bg-pine text-mint" : "text-ink-soft hover:text-ink"
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
           </div>
         </div>
 

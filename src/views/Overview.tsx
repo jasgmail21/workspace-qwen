@@ -37,6 +37,7 @@ function RecentRow({ t, currency }: { t: Transaction; currency: string }) {
         <p className="truncate text-sm font-semibold text-ink">{t.note || cat?.name}</p>
         <p className="text-[12px] text-ink-faint">
           {cat?.name} · {dayLabel(t.date)}
+          {t.payment ? ` · ${t.payment === "card" ? "Card" : "Cash"}` : ""}
         </p>
       </div>
       <span

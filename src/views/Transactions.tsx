@@ -241,6 +241,15 @@ export function Transactions({
                               {cat?.name ?? "Uncategorized"}
                               <span aria-hidden>·</span>
                               {t.type === "income" ? "Money in" : "Money out"}
+                              {t.payment && (
+                                <>
+                                  <span aria-hidden>·</span>
+                                  <span className="inline-flex items-center gap-1 font-medium text-ink-soft">
+                                    <Icon name={t.payment === "card" ? "wallet" : "coins"} size={12} />
+                                    {t.payment === "card" ? "Card" : "Cash"}
+                                  </span>
+                                </>
+                              )}
                             </p>
                           </div>
                           <span

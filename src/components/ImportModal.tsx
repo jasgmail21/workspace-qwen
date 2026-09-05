@@ -100,37 +100,110 @@ function parseAmount(s: string): number | null {
 function parseType(s: string | null, amount: number, allExpense: boolean): TxType {
   if (s) {
     const v = s.toLowerCase();
-    if (/inc|dep|credit|earned|salary|in\b/.test(v)) return "income";
-    if (/exp|with|debit|spent|out\b|purchase/.test(v)) return "expense";
+    if (/inflow|income|inc\b|dep\b|deposit|credit|cr\b|earned|salary|received|\bin\b/.test(v))
+      return "income";
+    if (/outflow|expense|exp\b|with\b|withdraw|debit|dr\b|spent|purchase|paid\b|\bout\b/.test(v))
+      return "expense";
   }
   if (amount < 0) return "expense";
   return allExpense ? "expense" : "income";
 }
 
-interface Mapping { date: number; amount: number; type: number; category: number; note: number }
+function parsePayment(s: string | null): "cash" | "card" | undefined {
+  if (!s) return undefined;
+  const v = s.toLowerCase();
+  if (/cash|upi|gpay|paytm|phonepe|neft|imps|net ?banking/.test(v)) return "cash";
+  if (/card|credit|debit|amex|visa|master|\bcc\b/.test(v)) return "card";
+  return undefined;
+}
+
+interface Mapping {
+  date: number;
+  amount: number;
+  type: number;
+  category: number;
+  note: number;
+  payment: number;
+}
 
 function guessMapping(headers: string[]): Mapping {
   const h = headers.map((x) => x.toLowerCase().trim());
   const find = (keys: string[], skip: number[] = []) =>
     h.findIndex((x, i) => !skip.includes(i) && keys.some((k) => x.includes(k)));
   const date = find(["date", "day", "when", "time"]);
-  const amount = find(["amount", "value", "sum", "total", "price", "cost"], [date]);
+  const amount = find(["amount", "value", "sum", "total", "price", "cost", "inr"], [date]);
   const type = find(["type", "kind", "flow", "in/out", "direction"], [date, amount]);
-  const category = find(["categor", "group", "tag", "class", "bucket"], [date, amount, type]);
-  const note = find(["note", "desc", "memo", "detail", "item", "payee", "merchant", "label"], [date, amount, type, category]);
-  return { date, amount, type, category, note };
+  const payment = find(["payment type", "payment", "paid via", "mode", "channel"], [date, amount, type]);
+  const category = find(["categor", "group", "tag", "class", "bucket", "head"], [date, amount, type, payment]);
+  const note = find(
+    ["note", "summary", "desc", "memo", "detail", "item", "particular", "payee", "merchant", "label", "narration", "remark"],
+    [date, amount, type, payment, category]
+  );
+  return { date, amount, type, category, note, payment };
+}
+
+/* -------- smart category inference from the note text -------- */
+
+const NOTE_RULES: { re: RegExp; cat: string; income?: boolean }[] = [
+  { re: /\bitr\b|tds|tax|challan/i, cat: "Taxes" },
+  { re: /wedding|marriage|shaadi|lehnga|tent|\bdj\b/i, cat: "Celebrations" },
+  { re: /dasvand|donat|charity|seva|gave\b/i, cat: "Charity & Giving" },
+  { re: /rent|landlord|maintenance|society/i, cat: "Housing" },
+  { re: /petrol|diesel|fuel|fasttag|toll|uber|ola|rapido|metro|auto|bike|car\b|i20|tyre|servic/i, cat: "Transport" },
+  { re: /electricity|power|water|internet|wifi|broadband|recharge|gas\b|bill/i, cat: "Utilities" },
+  { re: /sabji|vegetable|grocer|d\s?mart|bigbasket|blinkit|zepto|milk|ration|kirana|instamart|supermarket/i, cat: "Groceries" },
+  { re: /pizza|dinner|lunch|breakfast|dhaba|restaurant|caf[ée]|coffee|chai|swiggy|zomato|biryani|food|cake|\beat\b/i, cat: "Dining Out" },
+  { re: /flipkart|amazon|myntra|ajio|amway|shopping|mall|slipper|clothes|shoes|suits|shirt|dress|gift|payjama/i, cat: "Shopping" },
+  { re: /doctor|medicine|pharmacy|hospital|gym|medical|clinic/i, cat: "Health" },
+  { re: /movie|cinema|netflix|spotify|concert|party|subscription/i, cat: "Entertainment" },
+  { re: /flight|hotel|trip|travel|vacation|irctc|airbnb/i, cat: "Travel" },
+  { re: /salary|payroll|wages|bonus|variable/i, cat: "Salary", income: true },
+  { re: /freelance|invoice|client/i, cat: "Freelance", income: true },
+  { re: /dividend|interest|mutual|\bsip\b|\bmf\b|invest/i, cat: "Investments", income: true },
+  { re: /reimburse|refund|cashback|wallet/i, cat: "Other Income", income: true },
+];
+
+function inferCategory(
+  note: string,
+  type: TxType,
+  cats: { name: string; type: TxType }[]
+): string | null {
+  const n = note.toLowerCase();
+  if (!n.trim()) return null;
+  for (const r of NOTE_RULES) {
+    if (r.income && type !== "income") continue;
+    if (!r.income && type !== "expense") continue;
+    if (r.re.test(n)) return r.cat;
+  }
+  for (const c of cats) {
+    if (c.type !== type || c.name.length < 4) continue;
+    if (n.includes(c.name.toLowerCase())) return c.name;
+  }
+  return null;
 }
 
 interface Parsed {
   headers: string[];
   mapping: Mapping;
   sample: string[] | null;
-  transactions: { date: string; amount: number; type: TxType; categoryName: string; note: string }[];
+  transactions: {
+    date: string;
+    amount: number;
+    type: TxType;
+    categoryName: string;
+    note: string;
+    payment?: "cash" | "card";
+  }[];
   skipped: number;
   totalRows: number;
 }
 
-function buildParsed(text: string, allExpense: boolean, noHeader: boolean): Parsed | null {
+function buildParsed(
+  text: string,
+  allExpense: boolean,
+  noHeader: boolean,
+  cats: { name: string; type: TxType }[]
+): Parsed | null {
   const firstNl = text.indexOf("\n");
   const firstLine = firstNl === -1 ? text : text.slice(0, firstNl);
   if (firstLine.includes("\t")) text = text.replace(/\t/g, ","); // pasted straight from a sheet
@@ -141,7 +214,9 @@ function buildParsed(text: string, allExpense: boolean, noHeader: boolean): Pars
     ? rows[0].map((_, i) => `Column ${i + 1}`)
     : rows[0].map((h, i) => h.trim() || `Column ${i + 1}`);
   const dataRows = noHeader ? rows : rows.slice(1);
-  const mapping = noHeader ? { date: 0, amount: Math.min(1, headers.length - 1), type: -1, category: -1, note: -1 } : guessMapping(headers);
+  const mapping: Mapping = noHeader
+    ? { date: 0, amount: Math.min(1, headers.length - 1), type: -1, category: -1, note: -1, payment: -1 }
+    : guessMapping(headers);
   if (mapping.amount < 0) mapping.amount = headers.length > 1 ? 1 : 0;
   if (mapping.date < 0) mapping.date = 0;
 
@@ -154,12 +229,17 @@ function buildParsed(text: string, allExpense: boolean, noHeader: boolean): Pars
     const amount = parseAmount(rawAmount);
     if (!date || amount === null || amount === 0) { skipped++; continue; }
     const type = parseType(mapping.type >= 0 ? r[mapping.type] : null, amount, allExpense);
+    const note = (mapping.note >= 0 ? r[mapping.note] : "").trim();
+    const rawCat = (mapping.category >= 0 ? r[mapping.category] : "").trim();
+    const categoryName =
+      rawCat || inferCategory(note, type, cats) || "Uncategorized";
     out.push({
       date,
       amount: round2(Math.abs(amount)),
       type,
-      categoryName: (mapping.category >= 0 ? r[mapping.category] : "").trim() || "Uncategorized",
-      note: (mapping.note >= 0 ? r[mapping.note] : "").trim(),
+      categoryName,
+      note,
+      payment: parsePayment(mapping.payment >= 0 ? r[mapping.payment] : null),
     });
   }
   return {
@@ -196,8 +276,8 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const parsed = useMemo(
-    () => (raw ? buildParsed(raw, allExpense, noHeader) : null),
-    [raw, allExpense, noHeader]
+    () => (raw ? buildParsed(raw, allExpense, noHeader, categories) : null),
+    [raw, allExpense, noHeader, categories]
   );
 
   const loadData = (name: string, text: string) => {
@@ -250,6 +330,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
         categoryId: t.categoryName, // resolved by signature in the store
         note: t.note,
         date: t.date,
+        payment: t.payment,
       })),
     });
     onClose();
@@ -438,11 +519,11 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-                  {(["date", "amount", "type", "category", "note"] as const).map((k) => (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                  {(["date", "amount", "type", "category", "note", "payment"] as const).map((k) => (
                     <div key={k}>
                       <label className="stamp mb-1 block text-ink-soft">
-                        {k === "type" ? "type (in/out)" : k}
+                        {k === "type" ? "type (in/out)" : k === "payment" ? "paid via" : k}
                         {k === "date" || k === "amount" ? " *" : ""}
                       </label>
                       <select
@@ -475,6 +556,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                     <tr className="border-b border-line bg-paper text-[11px] uppercase tracking-wider text-ink-faint">
                       <th className="px-3 py-2">Date</th>
                       <th className="px-3 py-2">Type</th>
+                      <th className="px-3 py-2">Paid via</th>
                       <th className="px-3 py-2">Category</th>
                       <th className="px-3 py-2">Note</th>
                       <th className="px-3 py-2 text-right">Amount</th>
@@ -489,7 +571,22 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                             {t.type === "income" ? "in" : "out"}
                           </span>
                         </td>
-                        <td className="px-3 py-2 font-medium text-ink">{t.categoryName}</td>
+                        <td className="px-3 py-2">
+                          {t.payment ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-soft">
+                              <Icon name={t.payment === "card" ? "wallet" : "coins"} size={13} />
+                              {t.payment}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-ink-faint">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 font-medium text-ink">
+                          {t.categoryName}
+                          {t.categoryName === "Uncategorized" && (
+                            <span className="ml-1.5 rounded bg-line-soft px-1.5 py-0.5 text-[10px] font-bold text-ink-faint">auto</span>
+                          )}
+                        </td>
                         <td className="max-w-[160px] truncate px-3 py-2 text-ink-soft">{t.note || "—"}</td>
                         <td className="num px-3 py-2 text-right font-bold text-ink">{t.amount.toFixed(2)}</td>
                       </tr>

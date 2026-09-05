@@ -187,10 +187,11 @@ Same flow: import repo → build `npm run build` → publish directory `dist`
      error, this is the cause.
    - **Paste text**: the bulletproof fallback — copy rows straight out of the sheet
      (tabs are handled) or paste CSV text.
-2. **Review panel = the mapping.** After parsing you see five dropdowns —
-   **date · amount · type · category · note**. Each maps one role to one column of
-   *your* sheet; the app guesses first, you correct it. Choose *— none —* for roles your
-   sheet doesn't have.
+2. **Review panel = the mapping.** After parsing you see six dropdowns —
+   **date · amount · type · category · note · paid via**. Each maps one role to one column of
+   *your* sheet; the app guesses first (it knows headers like `Summary`, `Type`, `Payment Type`,
+   `Amount`, `Date`), you correct it. Choose *— none —* for roles your sheet doesn't have.
+   Changes apply instantly.
 3. **No Type column?** Leave `type` on *— none —* and tick
    *"treat positive rows as expenses"* (untick it if your sheet only contains income).
 4. The preview table shows the first 6 rows exactly as they'll import, plus counts:
@@ -201,9 +202,11 @@ Same flow: import repo → build `npm run build` → publish directory `dist`
 
 | Field | Examples that parse |
 |---|---|
-| Date | `2021-03-05`, `05/03/2021`, `3/5/21`, `Mar 5, 2021`, `5 Apr 2021` |
-| Amount | `1240.50`, `1,240.50`, `₹1,240.50`, `1.240,50`, `(45.00)`, `-45` |
-| Type (optional) | any cell containing in/out, income/expense, credit/debit, dep/with |
+| Date | `2021-03-05`, `05/03/2021`, `3/5/21`, `Mar 5, 2021`, `5 Apr 2021`, `1-Sep-2026` |
+| Amount | `1240.50`, `1,240.50`, `₹237,498.00`, `1.240,50`, `(45.00)`, `-45` |
+| Type (optional) | in/out, income/expense, **inflow/outflow**, credit/debit, dep/with |
+| Paid via (optional) | cash, upi, gpay, paytm → **Cash** · card, credit, debit, amex → **Card** |
+| Category (optional) | if absent/empty, the app infers it from the note text (petrol→Transport, sabji→Groceries, salary→Salary, dasvand→Charity & Giving …) and falls back to **Uncategorized** |
 
 **Header row:** the first row is treated as headers (column names). If your sheet has no
 header row, add one — it makes the mapping dropdowns readable.

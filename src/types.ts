@@ -20,6 +20,8 @@ export interface Transaction {
   note: string;
   /** ISO date yyyy-mm-dd (local) */
   date: string;
+  /** how it was paid — from the sheet's “Payment Type” column */
+  payment?: "cash" | "card";
   /** epoch ms — used for cloud merge (last-write-wins) */
   updatedAt?: number;
 }

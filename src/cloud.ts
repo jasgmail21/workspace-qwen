@@ -18,8 +18,11 @@ create table if not exists public.transactions (
   category_id text not null,
   note text not null default '',
   date date not null,
+  payment text,
   updated_at bigint not null default 0
 );
+-- safe to re-run: adds the payment column to projects created earlier
+alter table public.transactions add column if not exists payment text;
 
 create table if not exists public.categories (
   id text primary key,
@@ -68,6 +71,17 @@ create policy "sheet read" on public.sheet_inbox
   for select to authenticated using (true);
 create policy "sheet clear" on public.sheet_inbox
   for delete to authenticated using (true);
+
+-- per-user primary keys (safe to re-run; migrates older installs in place)
+do $$
+begin
+  alter table public.transactions drop constraint if exists transactions_pkey;
+  alter table public.transactions add primary key (id, user_id);
+  alter table public.categories drop constraint if exists categories_pkey;
+  alter table public.categories add primary key (id, user_id);
+exception when others then
+  null;
+end $$;
 `;
 
 /* ---------------- config ---------------- */
@@ -152,6 +166,7 @@ interface TxRow {
   category_id: string;
   note: string;
   date: string;
+  payment: string | null;
   updated_at: number;
 }
 
@@ -174,6 +189,7 @@ const txToRow = (t: Transaction, userId: string): TxRow => ({
   category_id: t.categoryId,
   note: t.note,
   date: t.date,
+  payment: t.payment ?? null,
   updated_at: t.updatedAt ?? 0,
 });
 
@@ -184,6 +200,7 @@ const rowToTx = (r: TxRow): Transaction => ({
   categoryId: r.category_id,
   note: r.note ?? "",
   date: typeof r.date === "string" ? r.date.slice(0, 10) : String(r.date),
+  payment: r.payment === "cash" || r.payment === "card" ? r.payment : undefined,
   updatedAt: Number(r.updated_at ?? 0),
 });
 
