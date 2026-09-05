@@ -75,12 +75,19 @@ create policy "sheet clear" on public.sheet_inbox
 export function loadCloudConfig(): CloudConfig | null {
   try {
     const raw = localStorage.getItem(CFG_KEY);
-    if (!raw) return null;
-    const c = JSON.parse(raw) as CloudConfig;
-    if (c && c.url && c.anonKey) return c;
+    if (raw) {
+      const c = JSON.parse(raw) as CloudConfig;
+      if (c && c.url && c.anonKey) return c;
+    }
   } catch {
     /* ignore */
   }
+  // Fallback: build-time env vars (handy on Vercel/Netlify — set them in the dashboard).
+  // The anon key is designed to be public, so this is safe.
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+  const url = env?.VITE_SUPABASE_URL;
+  const anonKey = env?.VITE_SUPABASE_ANON_KEY;
+  if (url && anonKey) return { url, anonKey };
   return null;
 }
 
