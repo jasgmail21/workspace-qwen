@@ -95,6 +95,9 @@ interface Parsed {
 }
 
 function buildParsed(text: string, allExpense: boolean): Parsed | null {
+  const firstNl = text.indexOf("\n");
+  const firstLine = firstNl === -1 ? text : text.slice(0, firstNl);
+  if (firstLine.includes("\t")) text = text.replace(/\t/g, ","); // pasted straight from a sheet
   const rows = parseCSV(text);
   if (rows.length < 2) return null;
   const headers = rows[0];
@@ -124,12 +127,13 @@ function buildParsed(text: string, allExpense: boolean): Parsed | null {
 
 /* ---------------- component ---------------- */
 
-type Source = "file" | "sheet";
+type Source = "file" | "sheet" | "paste";
 
 export function ImportModal({ onClose }: { onClose: () => void }) {
   const { categories, importBatch } = useApp();
   const [source, setSource] = useState<Source>("file");
   const [sheetUrl, setSheetUrl] = useState("");
+  const [pasteText, setPasteText] = useState("");
   const [raw, setRaw] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -237,7 +241,8 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
               onChange={setSource}
               options={[
                 { value: "file", label: "CSV file", icon: "receipt" },
-                { value: "sheet", label: "Google Sheet link", icon: "laptop" },
+                { value: "sheet", label: "Sheet link", icon: "laptop" },
+                { value: "paste", label: "Paste text", icon: "pencil" },
               ]}
             />
             <label className="flex items-center gap-2 text-[13px] font-medium text-ink-soft cursor-pointer">
@@ -291,7 +296,36 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                   <br />
                   Option B — <b>File → Share → Publish to web → CSV</b>, and paste that published link.
                 </p>
+                <p className="mt-2 border-t border-dashed border-line pt-2">
+                  Fetch keeps failing? Switch to <b>Paste text</b> and copy straight from the sheet
+                  (or <b>File → Download → CSV</b>, then open the file in a text editor).
+                </p>
               </div>
+            </div>
+          )}
+
+          {!raw && source === "paste" && (
+            <div className="space-y-3">
+              <textarea
+                className="field num min-h-[140px] text-[12.5px] leading-5"
+                placeholder={`Date,Type,Category,Note,Amount\n2021-03-05,expense,Groceries,Big bazaar,1240.50\n2021-03-07,income,Salary,March salary,52000`}
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+              />
+              <button
+                className={BTN_PRIMARY + " w-full"}
+                disabled={!pasteText.trim()}
+                onClick={() => {
+                  setErr(null);
+                  setFileName("Pasted data");
+                  setRaw(pasteText);
+                }}
+              >
+                <Icon name="check" size={15} strokeWidth={2.4} /> Parse pasted rows
+              </button>
+              <p className="text-[12px] leading-5 text-ink-faint">
+                Works with CSV text or values copied straight out of Google Sheets (tabs are converted for you).
+              </p>
             </div>
           )}
 

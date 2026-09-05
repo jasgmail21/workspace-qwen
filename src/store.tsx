@@ -464,7 +464,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (!/^https:\/\/.+\.supabase\.co$/.test(url)) {
           return "That doesn’t look like a Supabase project URL (https://xxxx.supabase.co).";
         }
-        if (anonKey.length < 20) return "The anon key looks too short — copy the full key.";
+        if (anonKey.length < 20)
+          return "That publishable key looks too short — copy the full key from Project Settings → API keys.";
         const client = makeClient({ url, anonKey });
         clientRef.current = client;
         saveCloudConfig({ url, anonKey });

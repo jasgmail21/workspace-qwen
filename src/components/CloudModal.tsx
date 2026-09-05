@@ -203,7 +203,9 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
                   <li className="flex gap-3">
                     <b className="num shrink-0 text-moss-deep">3.</b>
                     <span>
-                      Go to <b>Project Settings → API</b> and copy the <b>Project URL</b> and the <b>anon public</b> key.
+                      Go to <b>Project Settings → API keys</b> and copy the <b>Project URL</b> and the{" "}
+                      <b>Publishable key</b> (starts with <span className="num">sb_publishable_</span> — it replaces
+                      the old “anon” key). Never use the <span className="num">sb_secret_</span> key in a browser.
                     </span>
                   </li>
                   <li className="flex gap-3">
@@ -234,8 +236,10 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
                   <input id="sb-url" className="field num" placeholder="https://abcdefgh.supabase.co" value={url} onChange={(e) => setUrl(e.target.value)} required />
                 </div>
                 <div>
-                  <label className="stamp mb-1 block text-ink-soft" htmlFor="sb-key">Anon public key</label>
-                  <input id="sb-key" className="field num" placeholder="eyJhbGciOi…" value={anonKey} onChange={(e) => setAnonKey(e.target.value)} required />
+                  <label className="stamp mb-1 block text-ink-soft" htmlFor="sb-key">
+                    Publishable key <span className="normal-case tracking-normal">(new <span className="num">sb_publishable_…</span> or legacy anon key)</span>
+                  </label>
+                  <input id="sb-key" className="field num" placeholder="sb_publishable_…" value={anonKey} onChange={(e) => setAnonKey(e.target.value)} required />
                 </div>
                 {formErr && (
                   <p className="flex items-start gap-2 rounded-lg bg-coral-soft px-3 py-2 text-[13px] font-medium text-coral-deep">
@@ -246,7 +250,8 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
                   {busy === "connect" ? "Connecting…" : "Connect project"}
                 </button>
                 <p className="text-[12px] text-ink-faint">
-                  The anon key is safe to store here — security comes from row-level security + your account password.
+                  The publishable key is safe to store here — security comes from row-level security + your account
+                  password. The <span className="num">sb_secret_</span> key belongs on servers only; this app never needs it.
                 </p>
               </form>
 
