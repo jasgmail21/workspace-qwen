@@ -116,6 +116,19 @@ create policy "sheet clear" on public.sheet_inbox
   for delete to authenticated using (true);
 ```
 
+### If your project was created before the `payment` column existed
+
+Re-open the **Cloud sync** dialog in the app → **Copy SQL** → SQL Editor → **Run** (it is fully
+idempotent: `create table if not exists`, `add column if not exists`, guarded primary-key
+migration — nothing is duplicated or lost). Until you do this, every sync fails with
+*"column payment does not exist"*, which looks like a broken connection.
+
+Or run just this one line:
+
+```sql
+alter table public.transactions add column if not exists payment text;
+```
+
 ### Free-plan caveats (current)
 
 - **Auto-pause after 7 days of inactivity** — the only real time limit. Any sync counts as

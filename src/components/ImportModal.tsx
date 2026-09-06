@@ -126,17 +126,18 @@ interface Mapping {
   payment: number;
 }
 
+/** Word-boundary matching so e.g. "Summary" never steals the "sum/amount" slot. */
 function guessMapping(headers: string[]): Mapping {
   const h = headers.map((x) => x.toLowerCase().trim());
-  const find = (keys: string[], skip: number[] = []) =>
-    h.findIndex((x, i) => !skip.includes(i) && keys.some((k) => x.includes(k)));
-  const date = find(["date", "day", "when", "time"]);
-  const amount = find(["amount", "value", "sum", "total", "price", "cost", "inr"], [date]);
-  const type = find(["type", "kind", "flow", "in/out", "direction"], [date, amount]);
-  const payment = find(["payment type", "payment", "paid via", "mode", "channel"], [date, amount, type]);
-  const category = find(["categor", "group", "tag", "class", "bucket", "head"], [date, amount, type, payment]);
-  const note = find(
-    ["note", "summary", "desc", "memo", "detail", "item", "particular", "payee", "merchant", "label", "narration", "remark"],
+  const findIdx = (re: RegExp, skip: number[]) =>
+    h.findIndex((x, i) => !skip.includes(i) && re.test(x));
+  const date = findIdx(/\b(date|day|when)\b/, []);
+  const amount = findIdx(/\b(amount|amt|value|total|price|cost|sum|rs|inr)\b/, [date]);
+  const type = findIdx(/\b(type|kind|flow|direction)\b|in\s*\/\s*out/, [date, amount]);
+  const payment = findIdx(/\b(payment|paid|pay|mode|channel|via|method)\b/, [date, amount, type]);
+  const category = findIdx(/\b(categor(y|ies)?|group|tag|class|bucket|head)\b/, [date, amount, type, payment]);
+  const note = findIdx(
+    /\b(note|summary|desc(ription)?|memo|detail(s)?|item|particular(s)?|payee|merchant|label|narration|remark(s)?|name)\b/,
     [date, amount, type, payment, category]
   );
   return { date, amount, type, category, note, payment };
@@ -220,6 +221,31 @@ function buildParsed(
   if (mapping.amount < 0) mapping.amount = headers.length > 1 ? 1 : 0;
   if (mapping.date < 0) mapping.date = 0;
 
+  /* Self-heal: if the guessed columns parse zero rows, scan every
+     date×amount column pair and keep the one that parses the most. */
+  const readyCount = (m: Mapping) =>
+    dataRows.reduce(
+      (acc, r) =>
+        parseDate(r[m.date] ?? "") && parseAmount(r[m.amount] ?? "") !== null ? acc + 1 : acc,
+      0
+    );
+  if (dataRows.length > 0 && readyCount(mapping) === 0) {
+    let best: Mapping | null = null;
+    let bestScore = 0;
+    for (let d = 0; d < headers.length; d++) {
+      for (let a = 0; a < headers.length; a++) {
+        if (a === d) continue;
+        const cand: Mapping = { ...mapping, date: d, amount: a };
+        const s = readyCount(cand);
+        if (s > bestScore) {
+          bestScore = s;
+          best = cand;
+        }
+      }
+    }
+    if (best) Object.assign(mapping, best);
+  }
+
   const out: Parsed["transactions"] = [];
   let skipped = 0;
   for (const r of dataRows) {
@@ -272,7 +298,12 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
   }, [onClose]);
 
   const parsed = useMemo(
@@ -345,7 +376,8 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="anim-fade fixed inset-0 z-[60] grid place-items-center overflow-y-auto bg-pine/60 p-4" onClick={onClose}>
+    <div className="anim-fade fixed inset-0 z-[60] overflow-y-auto bg-pine/60" onClick={onClose}>
+      <div className="flex min-h-full items-start justify-center p-4 sm:p-6">
       <div
         className="anim-pop my-auto w-full max-w-2xl rounded-xl border-2 border-pine bg-card shadow-[8px_8px_0_0_rgba(13,33,26,0.35)]"
         onClick={(e) => e.stopPropagation()}
@@ -610,6 +642,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
             </>
           )}
         </div>
+      </div>
       </div>
     </div>
   );

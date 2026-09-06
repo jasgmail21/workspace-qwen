@@ -42,7 +42,12 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
   }, [onClose]);
 
   const copySql = async () => {
@@ -75,7 +80,8 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="anim-fade fixed inset-0 z-[60] grid place-items-center overflow-y-auto bg-pine/60 p-4" onClick={onClose}>
+    <div className="anim-fade fixed inset-0 z-[60] overflow-y-auto bg-pine/60" onClick={onClose}>
+      <div className="flex min-h-full items-start justify-center p-4 sm:p-6">
       <div
         className="anim-pop my-auto w-full max-w-xl rounded-xl border-2 border-pine bg-card shadow-[8px_8px_0_0_rgba(13,33,26,0.35)]"
         onClick={(e) => e.stopPropagation()}
@@ -287,6 +293,7 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
