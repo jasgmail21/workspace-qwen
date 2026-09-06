@@ -22,6 +22,7 @@ import type {
   CloudState,
   CloudUser,
   Settings,
+  SheetConfig,
   ToastItem,
   Transaction,
 } from "./types";
@@ -131,6 +132,7 @@ interface AppApi {
   updateCategory: (c: Category) => void;
   deleteCategory: (id: string) => void;
   setCurrency: (code: string) => void;
+  setSheetConfig: (cfg: SheetConfig | null) => void;
   resetDemo: () => void;
   importBatch: (b: ImportBatchInput) => void;
   connectCloud: (cfg: CloudConfig) => Promise<string | null>;
@@ -225,6 +227,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             categories: s.categories,
             currency: s.settings.currency,
             settingsUpdatedAt: s.settings.updatedAt ?? 0,
+            sheet: s.settings.sheet ?? null,
           },
           { tx: dirtyTx.current, cat: dirtyCat.current, settings: dirtySettings.current }
         );
@@ -235,7 +238,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setState({
           transactions: result.transactions,
           categories: result.categories,
-          settings: { currency: result.currency, updatedAt: result.settingsUpdatedAt },
+          settings: {
+            currency: result.currency,
+            updatedAt: result.settingsUpdatedAt,
+            sheet: result.sheet,
+          },
         });
         setCloud((c) => ({ ...c, status: "synced", lastSync: Date.now(), error: null }));
         if (result.ingestedFromSheet > 0) {
@@ -243,6 +250,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             kind: "success",
             message: `Imported ${result.ingestedFromSheet} entr${result.ingestedFromSheet === 1 ? "y" : "ies"} from your Google Sheet`,
           });
+        }
+        if (result.pulledFromSheet > 0) {
+          const tab = result.sheet?.tabName ? ` (${result.sheet.tabName})` : "";
+          pushToast({
+            kind: "success",
+            message: `Live sheet sync: pulled ${result.pulledFromSheet} new entr${result.pulledFromSheet === 1 ? "y" : "ies"}${tab}`,
+          });
+        }
+        if (result.sheetError && manual) {
+          pushToast({ kind: "error", message: `Live sheet sync skipped — ${result.sheetError}` });
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Sync failed";
@@ -471,6 +488,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setState((s) => ({ ...s, settings: { currency: code, updatedAt: now() } }));
         markDirtyAndSync("settings");
         pushToast({ kind: "success", message: `Currency switched to ${code}` });
+      },
+
+      setSheetConfig(cfg) {
+        setState((s) => ({
+          ...s,
+          settings: { ...s.settings, sheet: cfg, updatedAt: now() },
+        }));
+        markDirtyAndSync("settings");
+        if (cfg?.enabled && cfg.spreadsheetId) {
+          pushToast({
+            kind: "success",
+            message: `Live sheet sync saved${cfg.tabName ? ` — tab “${cfg.tabName}”` : ""}. It runs on every sync.`,
+          });
+          scheduleSync(600);
+        } else {
+          pushToast({ kind: "info", message: "Live sheet sync turned off" });
+        }
       },
 
       resetDemo() {

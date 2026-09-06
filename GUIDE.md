@@ -82,9 +82,14 @@ create table if not exists public.categories (
 
 create table if not exists public.settings (
   user_id uuid primary key,
-  currency text not null default 'USD',
+  currency text not null default 'INR',
+  sheet_config text,
   updated_at bigint not null default 0
 );
+
+-- safe to re-run: upgrades projects created before these columns existed
+alter table public.transactions add column if not exists payment text;
+alter table public.settings add column if not exists sheet_config text;
 
 create table if not exists public.sheet_inbox (
   id bigint generated always as identity primary key,
@@ -228,9 +233,35 @@ header row, add one — it makes the mapping dropdowns readable.
 
 ## 6 · Live sync: add a row in Sheets → it appears in Sprout
 
-Flow: `Google Sheet → Apps Script → sheet_inbox table → next Sprout sync ingests it`.
+### Option A — built-in pull sync (recommended, no code)
 
-1. In your sheet: **Extensions → Apps Script**. Delete the boilerplate, paste:
+Perfect for **month-wise tabs**: one spreadsheet, a new tab each month
+(`September 2026`, `October 2026`, …).
+
+1. In Google Sheets: **Share → “Anyone with the link”** (Viewer).
+2. In Sprout: sidebar → **Cloud sync → Live Google Sheet sync**:
+   - paste your main spreadsheet link,
+   - enter **this month’s tab name** (e.g. `September 2026`),
+   - tick **Pull on every sync** → **Save sheet sync**.
+3. Done. On every sync (after each change, or **Sync now**), Sprout fetches that
+   tab with the same parser as the Import dialog — columns auto-detected
+   (`Summary/Type/Payment Type/Amount/Date` all work), `Inflow/Outflow` understood,
+   `₹13,739.00` and `1-Sep-2026` converted, categories inferred from the note
+   (`Car Diesel` → Transport, `Electricity Bill` → Utilities…), Cash/Card captured,
+   and anything already imported is skipped (matched on date + amount + category + note).
+4. **New month?** Open Cloud sync, change the tab name, save. Next sync pulls the new tab.
+
+Notes:
+- Rows without a parseable date **and** amount (totals, notes, the “Total Income” block
+  at the bottom of your sheet) are skipped automatically.
+- Amount must sit in the **Amount** column — a row with an empty Amount cell is skipped.
+- The setting is stored in Supabase, so all your devices pull the same tab.
+
+### Option B — Apps Script push (fires the moment you type a row)
+
+Flow: `Google Sheet → Apps Script → sheet_inbox table → next Sprout sync ingests it`.
+Tab-agnostic (uses whatever tab you edit). In your sheet: **Extensions → Apps Script**.
+Delete the boilerplate, paste:
 
 ```js
 const SUPABASE_URL = "https://YOURPROJECT.supabase.co";

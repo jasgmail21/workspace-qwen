@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { SCHEMA_SQL } from "../cloud";
+import { spreadsheetIdFromUrl } from "../importer";
 import { useApp } from "../store";
 import { fmtAgo } from "../utils";
 import { Icon } from "./Icons";
@@ -25,12 +26,44 @@ function StatusPill() {
 }
 
 export function CloudModal({ onClose }: { onClose: () => void }) {
-  const { cloud, connectCloud, disconnectCloud, signIn, signUp, signOut, syncNow } = useApp();
+  const {
+    cloud,
+    settings,
+    connectCloud,
+    disconnectCloud,
+    signIn,
+    signUp,
+    signOut,
+    syncNow,
+    setSheetConfig,
+  } = useApp();
 
   const [url, setUrl] = useState("");
   const [anonKey, setAnonKey] = useState("");
   const [formErr, setFormErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  const savedSheet = settings.sheet ?? null;
+  const [sheetUrl, setSheetUrl] = useState(
+    savedSheet?.spreadsheetId ? `https://docs.google.com/spreadsheets/d/${savedSheet.spreadsheetId}` : ""
+  );
+  const [sheetTab, setSheetTab] = useState(savedSheet?.tabName ?? "");
+  const [sheetOn, setSheetOn] = useState(savedSheet?.enabled ?? false);
+  const [sheetErr, setSheetErr] = useState<string | null>(null);
+
+  const saveSheet = () => {
+    setSheetErr(null);
+    const id = spreadsheetIdFromUrl(sheetUrl);
+    if (!sheetOn) {
+      setSheetConfig(savedSheet ? { ...savedSheet, enabled: false } : null);
+      return;
+    }
+    if (!id) {
+      setSheetErr("Paste your spreadsheet link (or its ID) — it’s the long code in the sheet URL.");
+      return;
+    }
+    setSheetConfig({ spreadsheetId: id, tabName: sheetTab.trim(), enabled: true });
+  };
 
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
@@ -81,9 +114,9 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="anim-fade fixed inset-0 z-[60] overflow-y-auto bg-pine/60" onClick={onClose}>
-      <div className="flex min-h-full items-start justify-center p-4 sm:p-6">
+      <div className="flex min-h-full items-center justify-center p-4 sm:p-6">
       <div
-        className="anim-pop my-auto w-full max-w-xl rounded-xl border-2 border-pine bg-card shadow-[8px_8px_0_0_rgba(13,33,26,0.35)]"
+        className="anim-pop flex max-h-[calc(100dvh-2rem)] w-full max-w-xl flex-col rounded-xl border-2 border-pine bg-card shadow-[8px_8px_0_0_rgba(13,33,26,0.35)]"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -107,7 +140,7 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        <div className="max-h-[70vh] space-y-5 overflow-y-auto px-6 py-5">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
           {/* ---------- connected account ---------- */}
           {cloud.configured && cloud.user && (
             <div className="rounded-xl border-2 border-moss bg-mint-dim/60 p-4">
@@ -271,14 +304,60 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          {/* ---------- signed-in extras ---------- */}
+          {/* ---------- live Google Sheet sync ---------- */}
           {cloud.configured && cloud.user && (
-            <div className="rounded-xl border border-line bg-paper/70 p-4 text-[13px] leading-5 text-ink-soft">
-              <p className="mb-1.5 flex items-center gap-2 font-bold text-ink">
-                <Icon name="laptop" size={15} className="text-moss-deep" /> Google Sheet entries flow in too
-              </p>
-              If you wired your sheet with the Apps Script from the setup notes, rows you add there
-              land in the <span className="num text-[12px]">sheet_inbox</span> table and appear here on the next sync.
+            <div className="rounded-xl border-2 border-line bg-paper/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="flex items-center gap-2 font-display text-[15px] font-bold text-ink">
+                  <Icon name="laptop" size={17} className="text-moss-deep" /> Live Google Sheet sync
+                </p>
+                <label className="flex items-center gap-2 text-[13px] font-semibold text-ink-soft cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={sheetOn}
+                    onChange={(e) => setSheetOn(e.target.checked)}
+                    className="h-4 w-4 accent-[#2f7e58]"
+                  />
+                  Pull on every sync
+                </label>
+              </div>
+
+              <div className="mt-3 space-y-3">
+                <div>
+                  <label className="stamp mb-1 block text-ink-soft">Main spreadsheet link</label>
+                  <input
+                    className="field num"
+                    placeholder="https://docs.google.com/spreadsheets/d/…"
+                    value={sheetUrl}
+                    onChange={(e) => setSheetUrl(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[190px] flex-1">
+                    <label className="stamp mb-1 block text-ink-soft">This month’s tab</label>
+                    <input
+                      className="field"
+                      placeholder="e.g. September 2026"
+                      value={sheetTab}
+                      onChange={(e) => setSheetTab(e.target.value)}
+                    />
+                  </div>
+                  <button className={BTN_PRIMARY + " !py-2.5"} onClick={saveSheet}>
+                    <Icon name="check" size={15} strokeWidth={2.4} /> Save sheet sync
+                  </button>
+                </div>
+                {sheetErr && (
+                  <p className="flex items-start gap-2 rounded-lg bg-coral-soft px-3 py-2 text-[13px] font-medium text-coral-deep">
+                    <Icon name="alert" size={15} className="mt-0.5 shrink-0" /> {sheetErr}
+                  </p>
+                )}
+                <p className="text-[12px] leading-5 text-ink-faint">
+                  Every sync fetches that tab (columns auto-detected — Summary/Type/Payment Type/Amount/Date all work),
+                  skips rows you already have, files entries into matching categories and creates missing ones.
+                  <b className="text-ink-soft"> New month? Change the tab name above and save.</b> The sheet must be
+                  shared as <b className="text-ink-soft">“Anyone with the link”</b>. This setting syncs to your other devices.
+                </p>
+              </div>
             </div>
           )}
 

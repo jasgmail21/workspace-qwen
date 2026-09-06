@@ -29,6 +29,15 @@ export interface Transaction {
 export interface Settings {
   currency: string;
   updatedAt?: number;
+  /** live Google Sheet sync (stored in Supabase settings row) */
+  sheet?: SheetConfig | null;
+}
+
+export interface SheetConfig {
+  spreadsheetId: string;
+  /** tab within the spreadsheet — change monthly for month-wise sheets */
+  tabName: string;
+  enabled: boolean;
 }
 
 /* ---------- cloud sync ---------- */

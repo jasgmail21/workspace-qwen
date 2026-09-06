@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Category, CloudConfig, Transaction } from "./types";
+import { buildParsed, fetchSheetCSV } from "./importer";
+import type { Category, CloudConfig, SheetConfig, Transaction } from "./types";
 import { uid } from "./utils";
 
 const CFG_KEY = "sprout.cloud.config";
@@ -38,8 +39,11 @@ create table if not exists public.categories (
 create table if not exists public.settings (
   user_id uuid primary key,
   currency text not null default 'INR',
+  sheet_config text,
   updated_at bigint not null default 0
 );
+-- safe to re-run: adds live-sheet-sync config to projects created earlier
+alter table public.settings add column if not exists sheet_config text;
 
 -- optional: lets a Google Sheet push rows into your ledger
 create table if not exists public.sheet_inbox (
@@ -225,6 +229,23 @@ const rowToCat = (r: CatRow): Category => ({
   updatedAt: Number(r.updated_at ?? 0),
 });
 
+function parseSheetConfig(raw: string | null | undefined): SheetConfig | null {
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw) as Partial<SheetConfig>;
+    if (p && typeof p.spreadsheetId === "string") {
+      return {
+        spreadsheetId: p.spreadsheetId,
+        tabName: typeof p.tabName === "string" ? p.tabName : "",
+        enabled: !!p.enabled,
+      };
+    }
+  } catch {
+    /* ignore malformed config */
+  }
+  return null;
+}
+
 /* ---------------- the sync engine ---------------- */
 
 export interface SyncInput {
@@ -232,10 +253,15 @@ export interface SyncInput {
   categories: Category[];
   currency: string;
   settingsUpdatedAt: number;
+  /** live Google Sheet sync config (persisted in the cloud settings row) */
+  sheet?: SheetConfig | null;
 }
 
 export interface SyncResult extends SyncInput {
   ingestedFromSheet: number;
+  /** rows pulled from the configured live Google Sheet during this sync */
+  pulledFromSheet: number;
+  sheetError?: string | null;
 }
 
 export interface DirtyFlags {
@@ -272,7 +298,11 @@ export async function syncAll(
   const cloudCat = new Map<string, Category>(
     ((catRes.data ?? []) as CatRow[]).map((r) => [r.id, rowToCat(r)])
   );
-  const cloudSet = setRes.data as { currency: string; updated_at: number } | null;
+  const cloudSet = setRes.data as {
+    currency: string;
+    sheet_config?: string | null;
+    updated_at: number;
+  } | null;
 
   /* 2 — deletions recorded locally while (maybe) offline */
   const tombs = takeTombstones();
@@ -383,13 +413,72 @@ export async function syncAll(
     }
   }
 
-  /* 5 — settings merge */
+  /* 4b — live Google Sheet pull: fetch the configured tab, parse it with the
+     same engine as manual import, and add rows the ledger doesn't have yet. */
+  let pulled = 0;
+  let sheetError: string | null = null;
+  if (local.sheet?.enabled && local.sheet.spreadsheetId) {
+    try {
+      const csv = await fetchSheetCSV(local.sheet.spreadsheetId, local.sheet.tabName || undefined);
+      const parsed = buildParsed(csv, true, false, Array.from(mergedCat.values()));
+      if (parsed) {
+        const seen = new Set<string>();
+        for (const t of mergedTx.values())
+          seen.add(`${t.date}|${t.amount.toFixed(2)}|${t.categoryId}|${t.note}`);
+        const now = Date.now();
+        let i = 0;
+        for (const pt of parsed.transactions.slice(0, 2500)) {
+          let cat = Array.from(mergedCat.values()).find(
+            (c) => c.name.toLowerCase() === pt.categoryName.toLowerCase() && c.type === pt.type
+          );
+          if (!cat) {
+            let hash = 0;
+            for (const ch of pt.categoryName) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+            cat = {
+              id: `cat-${uid()}`,
+              name: pt.categoryName.replace(/^\w/, (c) => c.toUpperCase()),
+              type: pt.type,
+              color: FALLBACK_COLORS[hash % FALLBACK_COLORS.length],
+              icon: "coins",
+              updatedAt: now,
+            };
+            mergedCat.set(cat.id, cat);
+            pushCat.push(cat);
+          }
+          const tx: Transaction = {
+            id: uid(),
+            type: pt.type,
+            amount: pt.amount,
+            categoryId: cat.id,
+            note: pt.note || `From Google Sheet${local.sheet.tabName ? ` · ${local.sheet.tabName}` : ""}`,
+            date: pt.date,
+            payment: pt.payment,
+            updatedAt: now + i,
+          };
+          const key = `${tx.date}|${tx.amount.toFixed(2)}|${tx.categoryId}|${tx.note}`;
+          if (seen.has(key)) continue; // already imported earlier
+          seen.add(key);
+          mergedTx.set(tx.id, tx);
+          pushTx.push(tx);
+          i++;
+          pulled++;
+        }
+      }
+    } catch (e) {
+      sheetError = e instanceof Error ? e.message : "could not fetch the sheet";
+    }
+  }
+
+  /* 5 — settings merge (currency + live-sheet config travel together) */
   let currency = local.currency;
+  let sheetCfg: SheetConfig | null = local.sheet ?? null;
   let settingsUpdatedAt = local.settingsUpdatedAt;
+  const cloudSheet = parseSheetConfig(cloudSet?.sheet_config ?? null);
   const cloudSetAt = Number(cloudSet?.updated_at ?? 0);
   let pushSettings = dirty.settings || !cloudSet;
   if (cloudSet && cloudSetAt > settingsUpdatedAt) {
     currency = cloudSet.currency;
+    sheetCfg = cloudSheet;
     settingsUpdatedAt = cloudSetAt;
     pushSettings = false;
   }
@@ -409,6 +498,7 @@ export async function syncAll(
       client.from("settings").upsert({
         user_id: userId,
         currency,
+        sheet_config: sheetCfg ? JSON.stringify(sheetCfg) : null,
         updated_at: settingsUpdatedAt,
       })
     );
@@ -428,29 +518,11 @@ export async function syncAll(
     categories: Array.from(mergedCat.values()),
     currency,
     settingsUpdatedAt,
+    sheet: sheetCfg,
     ingestedFromSheet: ingested,
+    pulledFromSheet: pulled,
+    sheetError,
   };
 }
 
-/* ---------------- Google Sheet CSV fetch ---------------- */
-
-export async function fetchSheetCSV(url: string): Promise<string> {
-  let u = url.trim();
-  const m = u.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if (m && !u.includes("output=csv") && !u.includes("tqx=out:csv")) {
-    u = `https://docs.google.com/spreadsheets/d/${m[1]}/gviz/tq?tqx=out:csv`;
-  }
-  const res = await fetch(u);
-  if (!res.ok) {
-    throw new Error(
-      `Google returned ${res.status}. Make sure the sheet is shared as “Anyone with the link”, or use Share → Publish to web → CSV and paste that link.`
-    );
-  }
-  const text = await res.text();
-  if (text.trim().startsWith("<")) {
-    throw new Error(
-      "Google returned a web page instead of CSV. Open the sheet → File → Share → Publish to web → choose CSV → paste that link here."
-    );
-  }
-  return text;
-}
+/* Google Sheet CSV fetching lives in src/importer.ts (shared with manual import). */
