@@ -377,6 +377,12 @@ export async function syncAll(
 
   if (inboxRows.length > 0) {
     const now = Date.now();
+    // Build a set of existing transaction keys for dedup
+    const existingKeys = new Set<string>();
+    for (const t of mergedTx.values()) {
+      existingKeys.add(`${t.date}|${t.amount.toFixed(2)}|${t.note}|${t.type}`);
+    }
+
     const inboxIds: number[] = [];
     for (const r of inboxRows) {
       const amount = Math.abs(Number(r.amount));
@@ -386,6 +392,16 @@ export async function syncAll(
       }
       const type = /inc|dep|credit/i.test(r.kind ?? "") ? "income" : "expense";
       const name = (r.category ?? "").trim() || "Uncategorized";
+      const note = (r.note ?? "").trim() || "From Google Sheet";
+      const date = String(r.date).slice(0, 10);
+
+      // Check for duplicates before creating
+      const key = `${date}|${amount.toFixed(2)}|${note}|${type}`;
+      if (existingKeys.has(key)) {
+        inboxIds.push(r.id); // duplicate → drop from inbox
+        continue;
+      }
+
       let cat = Array.from(mergedCat.values()).find(
         (c) => c.name.toLowerCase() === name.toLowerCase() && c.type === type
       );
@@ -408,13 +424,14 @@ export async function syncAll(
         type,
         amount,
         categoryId: cat.id,
-        note: (r.note ?? "").trim() || "From Google Sheet",
-        date: String(r.date).slice(0, 10),
+        note,
+        date,
         payment: r.payment === "cash" || r.payment === "card" ? r.payment : undefined,
         updatedAt: now + ingested, // keep ordering stable
       };
       mergedTx.set(tx.id, tx);
       pushTx.push(tx);
+      existingKeys.add(key); // prevent duplicates within this batch
       inboxIds.push(r.id);
       ingested++;
     }
@@ -465,7 +482,9 @@ export async function syncAll(
             payment: pt.payment,
             updatedAt: now + i,
           };
-          const key = `${tx.date}|${tx.amount.toFixed(2)}|${tx.categoryId}`;
+          // Use a more stable dedup key that includes note text
+          // This prevents duplicates when category inference changes due to note edits
+          const key = `${tx.date}|${tx.amount.toFixed(2)}|${tx.note}|${tx.type}`;
           if (seen.has(key)) continue; // already imported earlier
           seen.add(key);
           mergedTx.set(tx.id, tx);
