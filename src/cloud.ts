@@ -40,10 +40,12 @@ create table if not exists public.settings (
   user_id uuid primary key,
   currency text not null default 'INR',
   sheet_config text,
+  password text,
   updated_at bigint not null default 0
 );
 -- safe to re-run: adds live-sheet-sync config to projects created earlier
 alter table public.settings add column if not exists sheet_config text;
+alter table public.settings add column if not exists password text;
 
 -- optional: lets a Google Sheet push rows into your ledger
 create table if not exists public.sheet_inbox (
@@ -53,8 +55,11 @@ create table if not exists public.sheet_inbox (
   category text default 'Uncategorized',
   note text default '',
   amount numeric(12,2),
+  payment text,
   created_at timestamptz default now()
 );
+-- safe to re-run: adds payment column to projects created earlier
+alter table public.sheet_inbox add column if not exists payment text;
 
 alter table public.transactions enable row level security;
 alter table public.categories   enable row level security;
@@ -255,6 +260,8 @@ export interface SyncInput {
   settingsUpdatedAt: number;
   /** live Google Sheet sync config (persisted in the cloud settings row) */
   sheet?: SheetConfig | null;
+  /** simple password gate for Vercel deployments */
+  password?: string | null;
 }
 
 export interface SyncResult extends SyncInput {
@@ -301,6 +308,7 @@ export async function syncAll(
   const cloudSet = setRes.data as {
     currency: string;
     sheet_config?: string | null;
+    password?: string | null;
     updated_at: number;
   } | null;
 
@@ -364,6 +372,7 @@ export async function syncAll(
         category: string | null;
         note: string | null;
         amount: number | null;
+        payment: string | null;
       }[]);
 
   if (inboxRows.length > 0) {
@@ -401,6 +410,7 @@ export async function syncAll(
         categoryId: cat.id,
         note: (r.note ?? "").trim() || "From Google Sheet",
         date: String(r.date).slice(0, 10),
+        payment: r.payment === "cash" || r.payment === "card" ? r.payment : undefined,
         updatedAt: now + ingested, // keep ordering stable
       };
       mergedTx.set(tx.id, tx);
@@ -424,7 +434,7 @@ export async function syncAll(
       if (parsed) {
         const seen = new Set<string>();
         for (const t of mergedTx.values())
-          seen.add(`${t.date}|${t.amount.toFixed(2)}|${t.categoryId}|${t.note}`);
+          seen.add(`${t.date}|${t.amount.toFixed(2)}|${t.categoryId}`);
         const now = Date.now();
         let i = 0;
         for (const pt of parsed.transactions.slice(0, 2500)) {
@@ -455,7 +465,7 @@ export async function syncAll(
             payment: pt.payment,
             updatedAt: now + i,
           };
-          const key = `${tx.date}|${tx.amount.toFixed(2)}|${tx.categoryId}|${tx.note}`;
+          const key = `${tx.date}|${tx.amount.toFixed(2)}|${tx.categoryId}`;
           if (seen.has(key)) continue; // already imported earlier
           seen.add(key);
           mergedTx.set(tx.id, tx);
@@ -469,9 +479,10 @@ export async function syncAll(
     }
   }
 
-  /* 5 — settings merge (currency + live-sheet config travel together) */
+  /* 5 — settings merge (currency + live-sheet config + password travel together) */
   let currency = local.currency;
   let sheetCfg: SheetConfig | null = local.sheet ?? null;
+  let password: string | null = local.password ?? null;
   let settingsUpdatedAt = local.settingsUpdatedAt;
   const cloudSheet = parseSheetConfig(cloudSet?.sheet_config ?? null);
   const cloudSetAt = Number(cloudSet?.updated_at ?? 0);
@@ -479,6 +490,7 @@ export async function syncAll(
   if (cloudSet && cloudSetAt > settingsUpdatedAt) {
     currency = cloudSet.currency;
     sheetCfg = cloudSheet;
+    password = cloudSet.password ?? null;
     settingsUpdatedAt = cloudSetAt;
     pushSettings = false;
   }
@@ -499,6 +511,7 @@ export async function syncAll(
         user_id: userId,
         currency,
         sheet_config: sheetCfg ? JSON.stringify(sheetCfg) : null,
+        password,
         updated_at: settingsUpdatedAt,
       })
     );
@@ -519,6 +532,7 @@ export async function syncAll(
     currency,
     settingsUpdatedAt,
     sheet: sheetCfg,
+    password,
     ingestedFromSheet: ingested,
     pulledFromSheet: pulled,
     sheetError,

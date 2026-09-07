@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { CloudModal } from "./components/CloudModal";
 import { AddFAB, MobileBar, Sidebar, ToastHost } from "./components/layout";
+import { PasswordGate } from "./components/PasswordGate";
 import { TransactionModal } from "./components/modals";
 import { AppProvider, useApp } from "./store";
 import type { Transaction, ViewId } from "./types";
@@ -29,6 +30,7 @@ function Shell() {
   const closeTx = () => setTxModal({ open: false, tx: null });
 
   return (
+    <PasswordGate>
     <div className="min-h-screen">
       <Sidebar view={view} setView={setView} onCloudOpen={() => setCloudOpen(true)} />
       <MobileBar view={view} setView={setView} onAdd={openAdd} onCloudOpen={() => setCloudOpen(true)} />
@@ -89,6 +91,7 @@ function Shell() {
       {txModal.open && <TransactionModal initial={txModal.tx} onClose={closeTx} />}
       {cloudOpen && <CloudModal onClose={() => setCloudOpen(false)} />}
     </div>
+    </PasswordGate>
   );
 }
 

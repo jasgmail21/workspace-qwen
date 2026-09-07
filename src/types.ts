@@ -31,6 +31,8 @@ export interface Settings {
   updatedAt?: number;
   /** live Google Sheet sync (stored in Supabase settings row) */
   sheet?: SheetConfig | null;
+  /** simple password gate for Vercel deployments */
+  password?: string | null;
 }
 
 export interface SheetConfig {

@@ -207,19 +207,30 @@ export function buildParsed(
   if (firstLine.includes("\t")) text = text.replace(/\t/g, ","); // pasted straight from a sheet
   const rows = parseCSV(text);
   if (rows.length === 0) return null;
-  if (!noHeader && rows.length < 2) return null;
-  const headers = noHeader
+  
+  /* Auto-detect headerless CSVs: if the first row's first cell parses as a date
+     or amount, treat the entire file as data (no header row). */
+  let detectedNoHeader = noHeader;
+  if (!noHeader && rows.length > 0) {
+    const firstCell = rows[0][0]?.trim() ?? "";
+    if (parseDate(firstCell) || parseAmount(firstCell) !== null) {
+      detectedNoHeader = true;
+    }
+  }
+  
+  if (!detectedNoHeader && rows.length < 2) return null;
+  const headers = detectedNoHeader
     ? rows[0].map((_, i) => `Column ${i + 1}`)
     : rows[0].map((h, i) => h.trim() || `Column ${i + 1}`);
-  const dataRows = noHeader ? rows : rows.slice(1);
-  const mapping: Mapping = noHeader
+  const dataRows = detectedNoHeader ? rows : rows.slice(1);
+  const mapping: Mapping = detectedNoHeader
     ? { date: 0, amount: Math.min(1, headers.length - 1), type: -1, category: -1, note: -1, payment: -1 }
     : guessMapping(headers);
   if (mapping.amount < 0) mapping.amount = headers.length > 1 ? 1 : 0;
   if (mapping.date < 0) mapping.date = 0;
 
   /* Self-heal: if the guessed columns parse zero rows, scan every
-     date×amount column pair and keep the one that parses the most. */
+     column pair for date×amount, then every remaining column for type/payment/note. */
   const readyCount = (m: Mapping) =>
     dataRows.reduce(
       (acc, r) =>
@@ -241,6 +252,52 @@ export function buildParsed(
       }
     }
     if (best) Object.assign(mapping, best);
+  }
+  
+  /* If we're in no-header mode (or detected it), also self-heal type/payment/note
+     by scanning remaining columns for keyword matches in the data itself. */
+  if (detectedNoHeader && dataRows.length > 0) {
+    const usedCols = new Set([mapping.date, mapping.amount]);
+    const sampleRow = dataRows[0];
+    
+    // Find type column: look for a cell that matches type keywords
+    if (mapping.type < 0) {
+      for (let i = 0; i < sampleRow.length; i++) {
+        if (usedCols.has(i)) continue;
+        const v = (sampleRow[i] ?? "").toLowerCase();
+        if (/inflow|outflow|income|expense|in\b|out\b/.test(v)) {
+          mapping.type = i;
+          usedCols.add(i);
+          break;
+        }
+      }
+    }
+    
+    // Find payment column: look for cash/card/upi
+    if (mapping.payment < 0) {
+      for (let i = 0; i < sampleRow.length; i++) {
+        if (usedCols.has(i)) continue;
+        const v = (sampleRow[i] ?? "").toLowerCase();
+        if (/cash|card|upi|gpay|paytm/.test(v)) {
+          mapping.payment = i;
+          usedCols.add(i);
+          break;
+        }
+      }
+    }
+    
+    // Find note column: first remaining column with text
+    if (mapping.note < 0) {
+      for (let i = 0; i < sampleRow.length; i++) {
+        if (usedCols.has(i)) continue;
+        const v = (sampleRow[i] ?? "").trim();
+        if (v && !parseDate(v) && parseAmount(v) === null) {
+          mapping.note = i;
+          usedCols.add(i);
+          break;
+        }
+      }
+    }
   }
 
   const out: ParsedTx[] = [];

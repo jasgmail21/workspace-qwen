@@ -133,6 +133,7 @@ interface AppApi {
   deleteCategory: (id: string) => void;
   setCurrency: (code: string) => void;
   setSheetConfig: (cfg: SheetConfig | null) => void;
+  setPassword: (password: string | null) => void;
   resetDemo: () => void;
   importBatch: (b: ImportBatchInput) => void;
   connectCloud: (cfg: CloudConfig) => Promise<string | null>;
@@ -228,6 +229,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             currency: s.settings.currency,
             settingsUpdatedAt: s.settings.updatedAt ?? 0,
             sheet: s.settings.sheet ?? null,
+            password: s.settings.password ?? null,
           },
           { tx: dirtyTx.current, cat: dirtyCat.current, settings: dirtySettings.current }
         );
@@ -242,6 +244,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             currency: result.currency,
             updatedAt: result.settingsUpdatedAt,
             sheet: result.sheet,
+            password: result.password,
           },
         });
         setCloud((c) => ({ ...c, status: "synced", lastSync: Date.now(), error: null }));
@@ -505,6 +508,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } else {
           pushToast({ kind: "info", message: "Live sheet sync turned off" });
         }
+      },
+
+      setPassword(password) {
+        setState((s) => ({
+          ...s,
+          settings: { ...s.settings, password, updatedAt: now() },
+        }));
+        markDirtyAndSync("settings");
+        pushToast({
+          kind: "success",
+          message: password ? "Password protection enabled" : "Password protection disabled",
+        });
       },
 
       resetDemo() {
