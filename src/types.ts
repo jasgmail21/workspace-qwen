@@ -22,6 +22,8 @@ export interface Transaction {
   date: string;
   /** how it was paid — from the sheet's “Payment Type” column */
   payment?: "cash" | "card";
+  /** Stable identifier from source (e.g., "sheet:tab_name:row_42") for deduplication */
+  sourceRef?: string;
   /** epoch ms — used for cloud merge (last-write-wins) */
   updatedAt?: number;
 }

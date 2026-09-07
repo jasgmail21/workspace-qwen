@@ -20,10 +20,14 @@ create table if not exists public.transactions (
   note text not null default '',
   date date not null,
   payment text,
+  source_ref text,
   updated_at bigint not null default 0
 );
--- safe to re-run: adds the payment column to projects created earlier
+-- safe to re-run: adds columns to projects created earlier
 alter table public.transactions add column if not exists payment text;
+alter table public.transactions add column if not exists source_ref text;
+-- unique index for source-based deduplication (allows nulls for manually created transactions)
+create unique index if not exists idx_transactions_source_ref on public.transactions(user_id, source_ref) where source_ref is not null;
 
 create table if not exists public.categories (
   id text primary key,
@@ -56,10 +60,12 @@ create table if not exists public.sheet_inbox (
   note text default '',
   amount numeric(12,2),
   payment text,
+  source_ref text,
   created_at timestamptz default now()
 );
--- safe to re-run: adds payment column to projects created earlier
+-- safe to re-run: adds columns to projects created earlier
 alter table public.sheet_inbox add column if not exists payment text;
+alter table public.sheet_inbox add column if not exists source_ref text;
 
 alter table public.transactions enable row level security;
 alter table public.categories   enable row level security;
@@ -176,6 +182,7 @@ interface TxRow {
   note: string;
   date: string;
   payment: string | null;
+  source_ref: string | null;
   updated_at: number;
 }
 
@@ -199,6 +206,7 @@ const txToRow = (t: Transaction, userId: string): TxRow => ({
   note: t.note,
   date: t.date,
   payment: t.payment ?? null,
+  source_ref: t.sourceRef ?? null,
   updated_at: t.updatedAt ?? 0,
 });
 
@@ -210,6 +218,7 @@ const rowToTx = (r: TxRow): Transaction => ({
   note: r.note ?? "",
   date: typeof r.date === "string" ? r.date.slice(0, 10) : String(r.date),
   payment: r.payment === "cash" || r.payment === "card" ? r.payment : undefined,
+  sourceRef: r.source_ref ?? undefined,
   updatedAt: Number(r.updated_at ?? 0),
 });
 
@@ -373,14 +382,17 @@ export async function syncAll(
         note: string | null;
         amount: number | null;
         payment: string | null;
+        source_ref: string | null;
       }[]);
 
   if (inboxRows.length > 0) {
     const now = Date.now();
-    // Build a set of existing transaction keys for dedup
-    const existingKeys = new Set<string>();
+    // Build a map of existing transactions by source_ref for dedup/updates
+    const existingBySource = new Map<string, Transaction>();
     for (const t of mergedTx.values()) {
-      existingKeys.add(`${t.date}|${t.amount.toFixed(2)}|${t.note}|${t.type}`);
+      if (t.sourceRef) {
+        existingBySource.set(t.sourceRef, t);
+      }
     }
 
     const inboxIds: number[] = [];
@@ -394,13 +406,8 @@ export async function syncAll(
       const name = (r.category ?? "").trim() || "Uncategorized";
       const note = (r.note ?? "").trim() || "From Google Sheet";
       const date = String(r.date).slice(0, 10);
-
-      // Check for duplicates before creating
-      const key = `${date}|${amount.toFixed(2)}|${note}|${type}`;
-      if (existingKeys.has(key)) {
-        inboxIds.push(r.id); // duplicate → drop from inbox
-        continue;
-      }
+      const sourceRef = r.source_ref ?? undefined;
+      const payment = r.payment === "cash" || r.payment === "card" ? r.payment : undefined;
 
       let cat = Array.from(mergedCat.values()).find(
         (c) => c.name.toLowerCase() === name.toLowerCase() && c.type === type
@@ -419,19 +426,38 @@ export async function syncAll(
         mergedCat.set(cat.id, cat);
         pushCat.push(cat);
       }
-      const tx: Transaction = {
-        id: uid(),
-        type,
-        amount,
-        categoryId: cat.id,
-        note,
-        date,
-        payment: r.payment === "cash" || r.payment === "card" ? r.payment : undefined,
-        updatedAt: now + ingested, // keep ordering stable
-      };
-      mergedTx.set(tx.id, tx);
-      pushTx.push(tx);
-      existingKeys.add(key); // prevent duplicates within this batch
+
+      // Check if transaction with this source_ref already exists
+      const existing = sourceRef ? existingBySource.get(sourceRef) : undefined;
+      if (existing) {
+        // Update existing transaction
+        existing.type = type;
+        existing.amount = amount;
+        existing.categoryId = cat.id;
+        existing.note = note;
+        existing.date = date;
+        existing.payment = payment;
+        existing.updatedAt = now + ingested;
+        pushTx.push(existing);
+      } else {
+        // Create new transaction
+        const tx: Transaction = {
+          id: uid(),
+          type,
+          amount,
+          categoryId: cat.id,
+          note,
+          date,
+          payment,
+          sourceRef,
+          updatedAt: now + ingested,
+        };
+        mergedTx.set(tx.id, tx);
+        pushTx.push(tx);
+        if (sourceRef) {
+          existingBySource.set(sourceRef, tx);
+        }
+      }
       inboxIds.push(r.id);
       ingested++;
     }
@@ -441,7 +467,7 @@ export async function syncAll(
   }
 
   /* 4b — live Google Sheet pull: fetch the configured tab, parse it with the
-     same engine as manual import, and add rows the ledger doesn't have yet. */
+     same engine as manual import, and add/update rows using source_ref for dedup. */
   let pulled = 0;
   let sheetError: string | null = null;
   if (local.sheet?.enabled && local.sheet.spreadsheetId) {
@@ -449,12 +475,21 @@ export async function syncAll(
       const csv = await fetchSheetCSV(local.sheet.spreadsheetId, local.sheet.tabName || undefined);
       const parsed = buildParsed(csv, true, false, Array.from(mergedCat.values()));
       if (parsed) {
-        const seen = new Set<string>();
-        for (const t of mergedTx.values())
-          seen.add(`${t.date}|${t.amount.toFixed(2)}|${t.categoryId}`);
+        // Build a map of existing transactions by source_ref
+        const existingBySource = new Map<string, Transaction>();
+        for (const t of mergedTx.values()) {
+          if (t.sourceRef) {
+            existingBySource.set(t.sourceRef, t);
+          }
+        }
         const now = Date.now();
         let i = 0;
-        for (const pt of parsed.transactions.slice(0, 2500)) {
+        for (let rowIdx = 0; rowIdx < parsed.transactions.length && rowIdx < 2500; rowIdx++) {
+          const pt = parsed.transactions[rowIdx];
+          // Generate source_ref from tab name and row number from the parsed transaction
+          const rowNum = pt.rowNumber ?? (rowIdx + 2);
+          const sourceRef = `sheet:${local.sheet.tabName || "default"}:row_${rowNum}`;
+
           let cat = Array.from(mergedCat.values()).find(
             (c) => c.name.toLowerCase() === pt.categoryName.toLowerCase() && c.type === pt.type
           );
@@ -472,23 +507,36 @@ export async function syncAll(
             mergedCat.set(cat.id, cat);
             pushCat.push(cat);
           }
-          const tx: Transaction = {
-            id: uid(),
-            type: pt.type,
-            amount: pt.amount,
-            categoryId: cat.id,
-            note: pt.note || `From Google Sheet${local.sheet.tabName ? ` · ${local.sheet.tabName}` : ""}`,
-            date: pt.date,
-            payment: pt.payment,
-            updatedAt: now + i,
-          };
-          // Use a more stable dedup key that includes note text
-          // This prevents duplicates when category inference changes due to note edits
-          const key = `${tx.date}|${tx.amount.toFixed(2)}|${tx.note}|${tx.type}`;
-          if (seen.has(key)) continue; // already imported earlier
-          seen.add(key);
-          mergedTx.set(tx.id, tx);
-          pushTx.push(tx);
+
+          // Check if transaction with this source_ref already exists
+          const existing = existingBySource.get(sourceRef);
+          if (existing) {
+            // Update existing transaction
+            existing.type = pt.type;
+            existing.amount = pt.amount;
+            existing.categoryId = cat.id;
+            existing.note = pt.note || `From Google Sheet${local.sheet.tabName ? ` · ${local.sheet.tabName}` : ""}`;
+            existing.date = pt.date;
+            existing.payment = pt.payment;
+            existing.updatedAt = now + i;
+            pushTx.push(existing);
+          } else {
+            // Create new transaction
+            const tx: Transaction = {
+              id: uid(),
+              type: pt.type,
+              amount: pt.amount,
+              categoryId: cat.id,
+              note: pt.note || `From Google Sheet${local.sheet.tabName ? ` · ${local.sheet.tabName}` : ""}`,
+              date: pt.date,
+              payment: pt.payment,
+              sourceRef,
+              updatedAt: now + i,
+            };
+            mergedTx.set(tx.id, tx);
+            pushTx.push(tx);
+            existingBySource.set(sourceRef, tx);
+          }
           i++;
           pulled++;
         }

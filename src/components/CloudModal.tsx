@@ -115,7 +115,7 @@ export function CloudModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="anim-fade fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-pine/60 p-4 sm:p-6" onClick={onClose}>
       <div
-        className="anim-pop my-8 flex w-full max-w-xl flex-col rounded-xl border-2 border-pine bg-card shadow-[8px_8px_0_0_rgba(13,33,26,0.35)]"
+        className="anim-pop my-8 flex max-h-[calc(100vh-4rem)] w-full max-w-xl flex-col rounded-xl border-2 border-pine bg-card shadow-[8px_8px_0_0_rgba(13,33,26,0.35)]"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

@@ -185,6 +185,8 @@ export interface ParsedTx {
   categoryName: string;
   note: string;
   payment?: "cash" | "card";
+  /** Original row number in the source (1-indexed, including header if present) */
+  rowNumber?: number;
 }
 
 export interface Parsed {
@@ -302,7 +304,8 @@ export function buildParsed(
 
   const out: ParsedTx[] = [];
   let skipped = 0;
-  for (const r of dataRows) {
+  for (let i = 0; i < dataRows.length; i++) {
+    const r = dataRows[i];
     const rawDate = r[mapping.date] ?? "";
     const rawAmount = r[mapping.amount] ?? "";
     const date = parseDate(rawDate);
@@ -319,6 +322,7 @@ export function buildParsed(
       categoryName,
       note,
       payment: parsePayment(mapping.payment >= 0 ? r[mapping.payment] : null),
+      rowNumber: detectedNoHeader ? i + 1 : i + 2, // +1 for 1-indexed, +2 if header exists
     });
   }
   return {

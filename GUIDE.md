@@ -66,6 +66,8 @@ create table if not exists public.transactions (
   category_id text not null,
   note text not null default '',
   date date not null,
+  payment text,
+  source_ref text,
   updated_at bigint not null default 0
 );
 
@@ -89,7 +91,11 @@ create table if not exists public.settings (
 
 -- safe to re-run: upgrades projects created before these columns existed
 alter table public.transactions add column if not exists payment text;
+alter table public.transactions add column if not exists source_ref text;
 alter table public.settings add column if not exists sheet_config text;
+
+-- unique index for source-based deduplication (allows nulls for manually created transactions)
+create unique index if not exists idx_transactions_source_ref on public.transactions(user_id, source_ref) where source_ref is not null;
 
 create table if not exists public.sheet_inbox (
   id bigint generated always as identity primary key,
@@ -98,6 +104,8 @@ create table if not exists public.sheet_inbox (
   category text default 'Uncategorized',
   note text default '',
   amount numeric(12,2),
+  payment text,
+  source_ref text,
   created_at timestamptz default now()
 );
 
@@ -267,13 +275,18 @@ Delete the boilerplate, paste:
 const SUPABASE_URL = "https://YOURPROJECT.supabase.co";
 const ANON_KEY = "sb_publishable_XXXXXXXX"; // publishable key (Apps Script is server-side, this is fine)
 
-// Sheet columns: A=Date  B=Type(income/expense)  C=Category  D=Note  E=Amount
+// Sheet columns: A=Date  B=Type(income/expense)  C=Category  D=Note  E=Amount  F=Payment(cash/card)
 function syncToSprout(e) {
   const row = e.range.getRow();
   if (row < 2) return; // skip header
-  const [date, kind, category, note, amount] = e.source
-    .getActiveSheet().getRange(row, 1, 1, 5).getValues()[0];
+  const sheet = e.source.getActiveSheet();
+  const [date, kind, category, note, amount, payment] = sheet.getRange(row, 1, 1, 6).getValues()[0];
   if (!date || !amount) return;
+  
+  // Generate stable source_ref from sheet name + row number
+  const sheetName = sheet.getName();
+  const sourceRef = `sheet:${sheetName}:row_${row}`;
+  
   UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/sheet_inbox", {
     method: "post",
     contentType: "application/json",
@@ -284,6 +297,8 @@ function syncToSprout(e) {
       category: String(category || "Uncategorized"),
       note: String(note || ""),
       amount: Math.abs(Number(amount)),
+      payment: String(payment || "").toLowerCase() === "cash" ? "cash" : "card",
+      source_ref: sourceRef,
     }),
   });
 }
