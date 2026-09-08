@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from "react";
+import { CategoryTransactionsModal } from "../components/CategoryTransactionsModal";
 import { Donut, DonutSeg, FlowBars, Sparkline } from "../components/Charts";
 import { Icon } from "../components/Icons";
 import { MonthNav } from "../components/layout";
-import { Bar, BTN_PRIMARY, CARD, CountUp, DeltaPill, Dot, EmptyState, Reveal } from "../components/ui";
+import { MonthPicker } from "../components/MonthPicker";
+import { Bar, BTN_PRIMARY, CARD, CountUp, DeltaPill, Dot, EmptyState, Reveal, Segmented } from "../components/ui";
 import { useApp } from "../store";
 import type { Transaction, ViewId } from "../types";
 import {
@@ -64,6 +66,9 @@ export function Overview({
   const currency = settings.currency;
   const isCurrent = monthKey === currentMonthKey();
   const [hovered, setHovered] = useState<number | null>(null);
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"month" | "alltime">("month");
 
   const monthTx = useMemo(
     () => transactions.filter((t) => t.date.startsWith(monthKey)),
@@ -84,19 +89,26 @@ export function Overview({
   );
   const savingsRate = income > 0 ? ((income - expense) / income) * 100 : null;
 
+  // All-time calculations
+  const allTimeIncome = sum(transactions, "income");
+  const allTimeExpense = sum(transactions, "expense");
+  const allTimeCount = transactions.length;
+
   const segments: DonutSeg[] = useMemo(() => {
     const expCats = categories.filter((c) => c.type === "expense");
+    const txSource = viewMode === "alltime" ? transactions : monthTx;
     return expCats
       .map((c) => ({
+        id: c.id,
         label: c.name,
         color: c.color,
-        value: monthTx
+        value: txSource
           .filter((t) => t.type === "expense" && t.categoryId === c.id)
           .reduce((s, t) => s + t.amount, 0),
       }))
       .filter((s) => s.value > 0)
       .sort((a, b) => b.value - a.value);
-  }, [categories, monthTx]);
+  }, [categories, monthTx, transactions, viewMode]);
 
   const flow = useMemo(
     () =>
@@ -157,10 +169,14 @@ export function Overview({
         <div>
           <p className="stamp text-moss">Overview</p>
           <div className="mt-1.5 flex flex-wrap items-center gap-3">
-            <h1 className="font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-              {monthLabel(monthKey)}
-            </h1>
-            {!isCurrent && (
+            <button
+              onClick={() => setShowMonthPicker(true)}
+              className="font-display text-3xl font-bold tracking-tight text-ink hover:text-moss-deep transition-colors cursor-pointer sm:text-4xl"
+              title="Click to change month"
+            >
+              {viewMode === "alltime" ? "All Time" : monthLabel(monthKey)}
+            </button>
+            {viewMode === "month" && !isCurrent && (
               <button
                 onClick={() => onMonth(currentMonthKey())}
                 className="rounded-full border border-moss bg-mint-dim px-3 py-1 text-[12px] font-bold text-moss-deep transition-transform hover:scale-105 cursor-pointer"
@@ -170,7 +186,11 @@ export function Overview({
             )}
           </div>
           <p className="mt-1.5 text-sm text-ink-soft">
-            {monthTx.length === 0
+            {viewMode === "alltime"
+              ? `${allTimeCount} entr${allTimeCount === 1 ? "y" : "ies"} recorded · net ${
+                  allTimeIncome - allTimeExpense >= 0 ? "positive" : "negative"
+                } ${fmtMoney(Math.abs(allTimeIncome - allTimeExpense), currency)}.`
+              : monthTx.length === 0
               ? "Nothing recorded yet — add your first entry."
               : `${monthTx.length} entr${monthTx.length === 1 ? "y" : "ies"} recorded · net ${
                   income - expense >= 0 ? "positive" : "negative"
@@ -178,7 +198,15 @@ export function Overview({
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <MonthNav monthKey={monthKey} onChange={onMonth} />
+          <Segmented
+            value={viewMode}
+            onChange={setViewMode}
+            options={[
+              { value: "month", label: "Month" },
+              { value: "alltime", label: "All Time" },
+            ]}
+          />
+          {viewMode === "month" && <MonthNav monthKey={monthKey} onChange={onMonth} />}
           <button className={BTN_PRIMARY} onClick={onAdd}>
             <Icon name="plus" size={16} strokeWidth={2.4} /> Add entry
           </button>
@@ -197,7 +225,7 @@ export function Overview({
             />
             <div className="relative">
               <div className="flex items-center justify-between">
-                <span className="stamp text-mint/70">Net balance · all time</span>
+                <span className="stamp text-mint/70">Net balance{viewMode === "alltime" ? " · all time" : ""}</span>
                 <span className="h-2 w-2 rounded-full bg-mint live-dot" />
               </div>
               <CountUp
@@ -205,25 +233,37 @@ export function Overview({
                 currency={currency}
                 className="mt-2 block text-[32px] font-bold leading-none sm:text-4xl"
               />
-              <div className="mt-3">
-                {savingsRate !== null ? (
-                  <span
-                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-bold ${
-                      savingsRate >= 0 ? "bg-pine-2 text-mint" : "bg-pine-2 text-[#f0a08e]"
-                    }`}
-                  >
-                    <Icon name={savingsRate >= 0 ? "sprout" : "alert"} size={13} />
-                    {savingsRate >= 0 ? "Saving" : "Overspending"}{" "}
-                    {Math.abs(savingsRate).toFixed(0)}% of {monthShort(monthKey)} income
+              {viewMode === "month" && (
+                <div className="mt-3">
+                  {savingsRate !== null ? (
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-bold ${
+                        savingsRate >= 0 ? "bg-pine-2 text-mint" : "bg-pine-2 text-[#f0a08e]"
+                      }`}
+                    >
+                      <Icon name={savingsRate >= 0 ? "sprout" : "alert"} size={13} />
+                      {savingsRate >= 0 ? "Saving" : "Overspending"}{" "}
+                      {Math.abs(savingsRate).toFixed(0)}% of {monthShort(monthKey)} income
+                    </span>
+                  ) : (
+                    <span className="text-[12px] text-mint/60">No income recorded this month yet</span>
+                  )}
+                </div>
+              )}
+              {viewMode === "alltime" && (
+                <div className="mt-3">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-pine-2 px-2.5 py-1 text-[12px] font-bold text-mint">
+                    <Icon name="coins" size={13} />
+                    {allTimeCount} total transactions
                   </span>
-                ) : (
-                  <span className="text-[12px] text-mint/60">No income recorded this month yet</span>
-                )}
-              </div>
-              <div className="mt-5">
-                <Sparkline values={netSeries} color="var(--color-mint)" id="net" className="h-12 w-full" />
-                <p className="mt-1.5 text-[11px] text-mint/50">Six-month net flow</p>
-              </div>
+                </div>
+              )}
+              {viewMode === "month" && (
+                <div className="mt-5">
+                  <Sparkline values={netSeries} color="var(--color-mint)" id="net" className="h-12 w-full" />
+                  <p className="mt-1.5 text-[11px] text-mint/50">Six-month net flow</p>
+                </div>
+              )}
             </div>
           </div>
         </Reveal>
@@ -236,14 +276,27 @@ export function Overview({
                 <Icon name="upRight" size={17} strokeWidth={2.2} />
               </span>
             </div>
-            <CountUp value={income} currency={currency} className="mt-2 block text-2xl font-bold sm:text-3xl" />
-            <div className="mt-2">
-              <DeltaPill pct={delta(income, pIncome)} suffix=" vs last mo." />
-            </div>
-            <div className="mt-auto pt-4">
-              <Sparkline values={incSeries} color="var(--color-moss)" id="inc" className="h-11 w-full" />
-              <p className="mt-1.5 text-[11px] text-ink-faint">Cumulative across the month</p>
-            </div>
+            <CountUp
+              value={viewMode === "alltime" ? allTimeIncome : income}
+              currency={currency}
+              className="mt-2 block text-2xl font-bold sm:text-3xl"
+            />
+            {viewMode === "month" && (
+              <>
+                <div className="mt-2">
+                  <DeltaPill pct={delta(income, pIncome)} suffix=" vs last mo." />
+                </div>
+                <div className="mt-auto pt-4">
+                  <Sparkline values={incSeries} color="var(--color-moss)" id="inc" className="h-11 w-full" />
+                  <p className="mt-1.5 text-[11px] text-ink-faint">Cumulative across the month</p>
+                </div>
+              </>
+            )}
+            {viewMode === "alltime" && (
+              <div className="mt-auto pt-4">
+                <p className="text-[12px] text-ink-faint">Total income across all time</p>
+              </div>
+            )}
           </div>
         </Reveal>
 
@@ -255,14 +308,27 @@ export function Overview({
                 <Icon name="downRight" size={17} strokeWidth={2.2} />
               </span>
             </div>
-            <CountUp value={expense} currency={currency} className="mt-2 block text-2xl font-bold sm:text-3xl" />
-            <div className="mt-2">
-              <DeltaPill pct={delta(expense, pExpense)} goodWhenDown suffix=" vs last mo." />
-            </div>
-            <div className="mt-auto pt-4">
-              <Sparkline values={expSeries} color="var(--color-coral)" id="exp" className="h-11 w-full" />
-              <p className="mt-1.5 text-[11px] text-ink-faint">Cumulative across the month</p>
-            </div>
+            <CountUp
+              value={viewMode === "alltime" ? allTimeExpense : expense}
+              currency={currency}
+              className="mt-2 block text-2xl font-bold sm:text-3xl"
+            />
+            {viewMode === "month" && (
+              <>
+                <div className="mt-2">
+                  <DeltaPill pct={delta(expense, pExpense)} goodWhenDown suffix=" vs last mo." />
+                </div>
+                <div className="mt-auto pt-4">
+                  <Sparkline values={expSeries} color="var(--color-coral)" id="exp" className="h-11 w-full" />
+                  <p className="mt-1.5 text-[11px] text-ink-faint">Cumulative across the month</p>
+                </div>
+              </>
+            )}
+            {viewMode === "alltime" && (
+              <div className="mt-auto pt-4">
+                <p className="text-[12px] text-ink-faint">Total expenses across all time</p>
+              </div>
+            )}
           </div>
         </Reveal>
       </div>
@@ -273,7 +339,9 @@ export function Overview({
           <div className={`${CARD} h-full p-5`}>
             <div className="flex items-baseline justify-between">
               <h2 className="font-display text-lg font-bold text-ink">Where it went</h2>
-              <span className="text-[12px] font-medium text-ink-faint">{monthShort(monthKey)} spending</span>
+              <span className="text-[12px] font-medium text-ink-faint">
+                {viewMode === "alltime" ? "All time" : monthShort(monthKey)} spending
+              </span>
             </div>
             {segments.length > 0 ? (
               <div className="mt-4 flex flex-col items-center gap-5">
@@ -282,34 +350,53 @@ export function Overview({
                   currency={currency}
                   hovered={hovered}
                   onHover={setHovered}
+                  onClick={(i) => {
+                    const seg = segments[i];
+                    if (seg && "id" in seg) {
+                      setSelectedCategory((seg as any).id);
+                    }
+                  }}
                 />
                 <ul className="w-full space-y-0.5">
-                  {segments.map((s, i) => (
-                    <li
-                      key={s.label}
-                      onMouseEnter={() => setHovered(i)}
-                      onMouseLeave={() => setHovered(null)}
-                      className={`flex cursor-default items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors ${
-                        hovered === i ? "bg-line-soft" : ""
-                      }`}
-                    >
-                      <Dot color={s.color} />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{s.label}</span>
-                      <span className="num w-12 text-right text-[12px] text-ink-faint">
-                        {expense > 0 ? ((s.value / expense) * 100).toFixed(0) : 0}%
-                      </span>
-                      <span className="num w-20 text-right text-sm font-bold text-ink">
-                        {fmtMoney(s.value, currency)}
-                      </span>
-                    </li>
-                  ))}
+                  {segments.map((s, i) => {
+                    const totalExp = viewMode === "alltime" ? allTimeExpense : expense;
+                    return (
+                      <li
+                        key={s.label}
+                        onMouseEnter={() => setHovered(i)}
+                        onMouseLeave={() => setHovered(null)}
+                        onClick={() => {
+                          if ("id" in s) {
+                            setSelectedCategory((s as any).id);
+                          }
+                        }}
+                        className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors ${
+                          hovered === i ? "bg-line-soft" : ""
+                        }`}
+                      >
+                        <Dot color={s.color} />
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{s.label}</span>
+                        <span className="num w-12 text-right text-[12px] text-ink-faint">
+                          {totalExp > 0 ? ((s.value / totalExp) * 100).toFixed(0) : 0}%
+                        </span>
+                        <span className="num w-20 text-right text-sm font-bold text-ink">
+                          {fmtMoney(s.value, currency)}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
+                <p className="text-[11px] text-ink-faint">Click a category to see transactions</p>
               </div>
             ) : (
               <EmptyState
                 icon="film"
                 title="No spending yet"
-                body={`Expenses added in ${monthLabel(monthKey)} will be broken down here by category.`}
+                body={
+                  viewMode === "alltime"
+                    ? "Expenses will be broken down here by category."
+                    : `Expenses added in ${monthLabel(monthKey)} will be broken down here by category.`
+                }
               />
             )}
           </div>
@@ -393,6 +480,27 @@ export function Overview({
           </div>
         </Reveal>
       </div>
+
+      {/* Modals */}
+      {showMonthPicker && (
+        <MonthPicker
+          currentKey={monthKey}
+          onSelect={onMonth}
+          onClose={() => setShowMonthPicker(false)}
+        />
+      )}
+
+      {selectedCategory && (
+        <CategoryTransactionsModal
+          categoryId={selectedCategory}
+          monthKey={viewMode === "alltime" ? "all" : monthKey}
+          onClose={() => setSelectedCategory(null)}
+          onEdit={() => {
+            // TODO: Implement edit functionality
+            setSelectedCategory(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -17,6 +17,7 @@ export function Donut({
   thickness = 27,
   hovered,
   onHover,
+  onClick,
 }: {
   segments: DonutSeg[];
   currency: string;
@@ -24,6 +25,7 @@ export function Donut({
   thickness?: number;
   hovered: number | null;
   onHover: (i: number | null) => void;
+  onClick?: (i: number) => void;
 }) {
   const mounted = useMounted(60);
   const total = segments.reduce((s, x) => s + x.value, 0);
@@ -67,6 +69,7 @@ export function Donut({
               }}
               onMouseEnter={() => onHover(i)}
               onMouseLeave={() => onHover(null)}
+              onClick={() => onClick?.(i)}
             />
           );
         })}
