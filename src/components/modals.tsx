@@ -112,7 +112,7 @@ export function TransactionModal({
       note: note.trim(),
       payment,
     };
-    if (initial) updateTransaction({ ...payload, id: initial.id });
+    if (initial) updateTransaction({ ...payload, id: initial.id, sourceRef: initial.sourceRef });
     else addTransaction(payload);
     onClose();
   };

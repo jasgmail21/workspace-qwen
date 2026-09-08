@@ -395,8 +395,15 @@ export async function syncAll(
       }
     }
 
-    const inboxIds: number[] = [];
+    // Deduplicate inbox rows by source_ref - keep only the latest entry for each source_ref
+    const dedupedInbox = new Map<string, typeof inboxRows[0]>();
     for (const r of inboxRows) {
+      const key = r.source_ref ?? `no_source_${r.id}`;
+      dedupedInbox.set(key, r);
+    }
+
+    const inboxIds: number[] = [];
+    for (const r of dedupedInbox.values()) {
       const amount = Math.abs(Number(r.amount));
       if (!r.date || isNaN(amount) || amount <= 0) {
         inboxIds.push(r.id); // malformed → drop it
