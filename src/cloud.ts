@@ -395,26 +395,37 @@ export async function syncAll(
       }
     }
 
-    // Deduplicate inbox rows by source_ref - keep only the latest entry for each source_ref
-    const dedupedInbox = new Map<string, typeof inboxRows[0]>();
+    // Group inbox rows by source_ref - we need to track ALL rows to delete them all
+    const inboxBySource = new Map<string, typeof inboxRows>();
     for (const r of inboxRows) {
       const key = r.source_ref ?? `no_source_${r.id}`;
-      dedupedInbox.set(key, r);
+      if (!inboxBySource.has(key)) {
+        inboxBySource.set(key, []);
+      }
+      inboxBySource.get(key)!.push(r);
     }
 
-    const inboxIds: number[] = [];
-    for (const r of dedupedInbox.values()) {
-      const amount = Math.abs(Number(r.amount));
-      if (!r.date || isNaN(amount) || amount <= 0) {
-        inboxIds.push(r.id); // malformed → drop it
-        continue;
+    const allInboxIds: number[] = [];
+    for (const rows of inboxBySource.values()) {
+      // Sort by ID descending to get the latest entry (highest ID = most recent)
+      rows.sort((a, b) => b.id - a.id);
+      const latest = rows[0];
+      
+      // Collect ALL inbox IDs for deletion (not just the one we process)
+      for (const row of rows) {
+        allInboxIds.push(row.id);
       }
-      const type = /inc|dep|credit/i.test(r.kind ?? "") ? "income" : "expense";
-      const name = (r.category ?? "").trim() || "Uncategorized";
-      const note = (r.note ?? "").trim() || "From Google Sheet";
-      const date = String(r.date).slice(0, 10);
-      const sourceRef = r.source_ref ?? undefined;
-      const payment = r.payment === "cash" || r.payment === "card" ? r.payment : undefined;
+
+      const amount = Math.abs(Number(latest.amount));
+      if (!latest.date || isNaN(amount) || amount <= 0) {
+        continue; // malformed → skip but still delete from inbox
+      }
+      const type = /inc|dep|credit/i.test(latest.kind ?? "") ? "income" : "expense";
+      const name = (latest.category ?? "").trim() || "Uncategorized";
+      const note = (latest.note ?? "").trim() || "From Google Sheet";
+      const date = String(latest.date).slice(0, 10);
+      const sourceRef = latest.source_ref ?? undefined;
+      const payment = latest.payment === "cash" || latest.payment === "card" ? latest.payment : undefined;
 
       let cat = Array.from(mergedCat.values()).find(
         (c) => c.name.toLowerCase() === name.toLowerCase() && c.type === type
@@ -465,11 +476,12 @@ export async function syncAll(
           existingBySource.set(sourceRef, tx);
         }
       }
-      inboxIds.push(r.id);
       ingested++;
     }
-    if (inboxIds.length > 0) {
-      await client.from("sheet_inbox").delete().in("id", inboxIds);
+    
+    // Delete ALL inbox rows (including duplicates) after processing
+    if (allInboxIds.length > 0) {
+      await client.from("sheet_inbox").delete().in("id", allInboxIds);
     }
   }
 
